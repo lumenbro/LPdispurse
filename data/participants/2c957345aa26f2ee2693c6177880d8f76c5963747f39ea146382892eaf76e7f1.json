@@ -1,0 +1,12 @@
+{
+  "pool_id": "2c957345aa26f2ee2693c6177880d8f76c5963747f39ea146382892eaf76e7f1",
+  "fetched_at": "2025-11-16T05:28:53.984698+00:00",
+  "total_shares": "60312167598",
+  "records": [
+    {
+      "balance": "58092318870",
+      "account": "GCHAIE7BKB2EWTPQG2RWI3IQIALHUKP2LPAZZFG3STLXRUD37PZ7WEUZ",
+      "paging_token": "AAAADYaScJYAra+d"
+    }
+  ]
+}

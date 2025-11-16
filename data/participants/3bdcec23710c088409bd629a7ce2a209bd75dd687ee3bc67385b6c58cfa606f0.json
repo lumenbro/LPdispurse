@@ -1,0 +1,22 @@
+{
+  "pool_id": "3bdcec23710c088409bd629a7ce2a209bd75dd687ee3bc67385b6c58cfa606f0",
+  "fetched_at": "2025-11-16T05:29:39.565737+00:00",
+  "total_shares": "50484342132311",
+  "records": [
+    {
+      "balance": "25723406123351",
+      "account": "GDOXGZHQNIAHOLZ4QBM4IEHMG55J47XEFANKZ3J44JJCXXMSPDJYICQX",
+      "paging_token": "AAAXZTJ8AVcBBeb8"
+    },
+    {
+      "balance": "16939707865481",
+      "account": "GCHAIE7BKB2EWTPQG2RWI3IQIALHUKP2LPAZZFG3STLXRUD37PZ7WEUZ",
+      "paging_token": "AAAPaBVFGYkAra+d"
+    },
+    {
+      "balance": "7821228143479",
+      "account": "GBMUFSJEZTQWJPNKRKOKQ63AD65SNI2FASV72EVDCYEOATESD63365FY",
+      "paging_token": "AAAHHQWGc3cA/DJX"
+    }
+  ]
+}

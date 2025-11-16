@@ -1,0 +1,63 @@
+{
+  "pool_id": "5d93ca3f0900560945e8db9fe96882e8f7ed1cb212622624ccdbdd43078d63b4",
+  "date": "2025-11-16",
+  "created_at": "2025-11-16T05:16:25.132889+00:00",
+  "records": [
+    {
+      "account": "GCHAIE7BKB2EWTPQG2RWI3IQIALHUKP2LPAZZFG3STLXRUD37PZ7WEUZ",
+      "hourly_amount_lmnr": "103.1635968",
+      "response": {
+        "tx_status": "PENDING",
+        "hash": "c3af60664d0bca344a6b7ee45e6fea4b762cbf08af84cabbf61f13400cbeade8"
+      }
+    },
+    {
+      "account": "GAKIWUJPRLFYZUBZ4ZGYNQR3DL3O5VPBQ6JXMRLJCOK7KHFYUZXUDURV",
+      "hourly_amount_lmnr": "16.6932884",
+      "response": {
+        "tx_status": "PENDING",
+        "hash": "c3af60664d0bca344a6b7ee45e6fea4b762cbf08af84cabbf61f13400cbeade8"
+      }
+    },
+    {
+      "account": "GCW7NAQVS3S5MWJV4HUSLEOT3AJGGTXVGP4TXEYHSP4TXZDQHAQH6GYN",
+      "hourly_amount_lmnr": "14.2370255",
+      "response": {
+        "tx_status": "PENDING",
+        "hash": "c3af60664d0bca344a6b7ee45e6fea4b762cbf08af84cabbf61f13400cbeade8"
+      }
+    },
+    {
+      "account": "GB35ZIXTWFVYZ64EXTW3ULQKIREF2L7OK72LMY4GRSUNHKTUWAGJ5IRK",
+      "hourly_amount_lmnr": "5.8380371",
+      "response": {
+        "tx_status": "PENDING",
+        "hash": "c3af60664d0bca344a6b7ee45e6fea4b762cbf08af84cabbf61f13400cbeade8"
+      }
+    },
+    {
+      "account": "GCBT4REH74AIHC67OD7MSL5UUCXNVFNRT6P4MFEFU2QW5D5FMRW4EK3S",
+      "hourly_amount_lmnr": "5.4044171",
+      "response": {
+        "tx_status": "PENDING",
+        "hash": "c3af60664d0bca344a6b7ee45e6fea4b762cbf08af84cabbf61f13400cbeade8"
+      }
+    },
+    {
+      "account": "GBTC7MRR2YXZII3OIMFWEJDSEYDK3TX6PATR45EFRA74WVTZEBCQFU5I",
+      "hourly_amount_lmnr": "3.2393932",
+      "response": {
+        "tx_status": "PENDING",
+        "hash": "c3af60664d0bca344a6b7ee45e6fea4b762cbf08af84cabbf61f13400cbeade8"
+      }
+    },
+    {
+      "account": "GCIFK3ZYZBS2MOFTMH6YPND7A7ZAGIAAPPTF5WQTIT4HNF2PRHHEXAMT",
+      "hourly_amount_lmnr": "2.4604496",
+      "response": {
+        "tx_status": "PENDING",
+        "hash": "c3af60664d0bca344a6b7ee45e6fea4b762cbf08af84cabbf61f13400cbeade8"
+      }
+    }
+  ]
+}

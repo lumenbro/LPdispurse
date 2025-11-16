@@ -1,0 +1,42 @@
+{
+  "pool_id": "5d93ca3f0900560945e8db9fe96882e8f7ed1cb212622624ccdbdd43078d63b4",
+  "fetched_at": "2025-11-16T05:25:03.359419+00:00",
+  "total_shares": "1725061463299",
+  "records": [
+    {
+      "balance": "1067781272268",
+      "account": "GCHAIE7BKB2EWTPQG2RWI3IQIALHUKP2LPAZZFG3STLXRUD37PZ7WEUZ",
+      "paging_token": "AAAA+Jy5MswAra+d"
+    },
+    {
+      "balance": "172781691453",
+      "account": "GAKIWUJPRLFYZUBZ4ZGYNQR3DL3O5VPBQ6JXMRLJCOK7KHFYUZXUDURV",
+      "paging_token": "AAAAKDqXYj0BCWLc"
+    },
+    {
+      "balance": "147358464880",
+      "account": "GCW7NAQVS3S5MWJV4HUSLEOT3AJGGTXVGP4TXEYHSP4TXZDQHAQH6GYN",
+      "paging_token": "AAAAIk8/u3AA2sBM"
+    },
+    {
+      "balance": "60425837397",
+      "account": "GB35ZIXTWFVYZ64EXTW3ULQKIREF2L7OK72LMY4GRSUNHKTUWAGJ5IRK",
+      "paging_token": "AAAADhGpG1UAnGkD"
+    },
+    {
+      "balance": "55937710242",
+      "account": "GCBT4REH74AIHC67OD7MSL5UUCXNVFNRT6P4MFEFU2QW5D5FMRW4EK3S",
+      "paging_token": "AAAADQYluKIAtGq2"
+    },
+    {
+      "balance": "33528915158",
+      "account": "GBTC7MRR2YXZII3OIMFWEJDSEYDK3TX6PATR45EFRA74WVTZEBCQFU5I",
+      "paging_token": "AAAAB856pNYA5H0I"
+    },
+    {
+      "balance": "25466561282",
+      "account": "GCIFK3ZYZBS2MOFTMH6YPND7A7ZAGIAAPPTF5WQTIT4HNF2PRHHEXAMT",
+      "paging_token": "AAAABe3s4wIAmjGC"
+    }
+  ]
+}

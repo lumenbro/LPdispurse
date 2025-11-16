@@ -1,0 +1,12 @@
+{
+  "pool_id": "68817e69e5f37dd8142bd994fa709aa6da94eb20509980cb1766ac09069d6bbd",
+  "fetched_at": "2025-11-16T05:27:13.454504+00:00",
+  "total_shares": "818186401354",
+  "records": [
+    {
+      "balance": "818186401354",
+      "account": "GCR3SX4FCKOYQVAFM4YIFRBFLBHW2KUSOVJGQQAFHFGYOF7LMKSH33JE",
+      "paging_token": "AAAAvn+1tkoA5UjW"
+    }
+  ]
+}

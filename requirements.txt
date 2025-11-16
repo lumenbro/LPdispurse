@@ -1,0 +1,8 @@
+aiogram==3.18.0
+stellar-sdk[aiohttp]==12.2.0
+cryptography==44.0.1
+python-dotenv==1.0.1
+asyncpg==0.30.0
+boto3==1.37.37
+apscheduler==3.10.4
+aiohttp==3.10.10
