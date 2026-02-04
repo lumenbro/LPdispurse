@@ -6,9 +6,13 @@ import { processPool, snapshotPool } from "@/lib/indexer";
 export const maxDuration = 60; // Vercel Pro: up to 60s
 
 export async function GET(request: Request) {
-  // Verify Vercel cron secret
+  // Verify Vercel cron secret or admin wallet
   const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  const cronSecret = process.env.CRON_SECRET;
+  const adminWallet = process.env.NEXT_PUBLIC_ADMIN_WALLET;
+  const token = authHeader?.replace("Bearer ", "");
+
+  if (token !== cronSecret && token !== adminWallet) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

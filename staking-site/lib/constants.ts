@@ -1,4 +1,5 @@
 export const CONTRACT_ID = process.env.NEXT_PUBLIC_CONTRACT_ID ?? "";
+export const ADMIN_WALLET = process.env.NEXT_PUBLIC_ADMIN_WALLET ?? "";
 export const NETWORK_PASSPHRASE =
   process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE ??
   "Test SDF Network ; September 2015";

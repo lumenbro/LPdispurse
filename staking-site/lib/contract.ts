@@ -83,6 +83,14 @@ export interface StakingClient {
   ): Promise<AssembledTransaction<any>>;
 
   // Admin functions
+  add_pool(
+    args: { admin: string; pool_id: Buffer },
+    options?: any
+  ): Promise<AssembledTransaction<number>>;
+  remove_pool(
+    args: { admin: string; pool_index: number },
+    options?: any
+  ): Promise<AssembledTransaction<any>>;
   set_merkle_root(
     args: {
       admin: string;
