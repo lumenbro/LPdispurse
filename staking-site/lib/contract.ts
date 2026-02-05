@@ -237,9 +237,31 @@ async function rawInvokeContract(
   console.log(`[rawInvoke] ${functionName}: assembling...`);
   const assembled = assembleTransaction(tx, simResponse).build();
 
+  // Debug: verify the assembled transaction properties
+  console.log(`[rawInvoke] ${functionName}: assembled source=${assembled.source}`);
+  console.log(`[rawInvoke] ${functionName}: assembled networkPassphrase=${assembled.networkPassphrase}`);
+  console.log(`[rawInvoke] ${functionName}: assembled sequence=${assembled.sequence}`);
+  console.log(`[rawInvoke] ${functionName}: assembled fee=${assembled.fee}`);
+  console.log(`[rawInvoke] ${functionName}: assembled sigs before sign=${assembled.signatures.length}`);
+
+  // Debug: log the hash that will be signed
+  const txHash = assembled.hash();
+  console.log(`[rawInvoke] ${functionName}: txHash=${txHash.toString("hex")}`);
+
+  // Debug: verify keypair matches the source
+  console.log(`[rawInvoke] ${functionName}: keypair pubkey=${keypair.publicKey()}`);
+  console.log(`[rawInvoke] ${functionName}: source matches keypair=${assembled.source === keypair.publicKey()}`);
+
   // 6. Sign the transaction envelope
   console.log(`[rawInvoke] ${functionName}: signing envelope...`);
   assembled.sign(keypair);
+  console.log(`[rawInvoke] ${functionName}: sigs after sign=${assembled.signatures.length}`);
+  console.log(`[rawInvoke] ${functionName}: sig hint=${assembled.signatures[0]?.hint().toString("hex")}`);
+
+  // Debug: log the full signed XDR (truncated for readability)
+  const signedXdr = assembled.toXDR();
+  console.log(`[rawInvoke] ${functionName}: signedXdr length=${signedXdr.length}`);
+  console.log(`[rawInvoke] ${functionName}: signedXdr (first 200)=${signedXdr.slice(0, 200)}`);
 
   // 7. Submit
   console.log(`[rawInvoke] ${functionName}: submitting...`);
