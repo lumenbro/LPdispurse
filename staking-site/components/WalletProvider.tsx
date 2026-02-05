@@ -55,9 +55,16 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         "@creit-tech/stellar-wallets-kit/modules/utils"
       );
 
+      const { Networks } = await import(
+        "@creit-tech/stellar-wallets-kit/types"
+      );
+
       StellarWalletsKit.init({
         theme: SwkAppDarkTheme,
         modules: defaultModules(),
+        network: NETWORK_PASSPHRASE.includes("Public")
+          ? Networks.PUBLIC
+          : Networks.TESTNET,
       });
 
       // Listen for wallet state changes (connection/disconnection)
@@ -86,10 +93,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       const { address } = await StellarWalletsKit.authModal();
       setPublicKey(address);
     } catch (err: any) {
-      // User closed modal or wallet error
-      if (err?.code !== -1) {
-        console.error("Wallet connection failed:", err);
-      }
+      // code -1 = user closed modal, anything else is a real error
+      console.error("Wallet connection error:", err?.code, err?.message ?? err);
     } finally {
       setConnecting(false);
     }

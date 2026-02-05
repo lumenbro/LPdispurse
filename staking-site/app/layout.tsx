@@ -5,6 +5,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "LMNR LP Staking",
   description: "Stake your SDEX LP positions and earn LMNR rewards",
+  icons: { icon: "/favicon.svg" },
 };
 
 export default function RootLayout({
