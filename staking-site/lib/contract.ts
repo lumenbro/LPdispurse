@@ -148,12 +148,17 @@ export function createAdminClient(): StakingClient & { publicKey: string } {
   if (!secret) throw new Error("ADMIN_SECRET_KEY not set");
   const keypair = Keypair.fromSecret(secret);
 
+  console.log("[AdminClient] Derived public key:", keypair.publicKey());
+  console.log("[AdminClient] NETWORK_PASSPHRASE:", NETWORK_PASSPHRASE);
+
   const client = makeClient({
     publicKey: keypair.publicKey(),
     signTransaction: async (xdr: string) => {
       const { TransactionBuilder } = await import("@stellar/stellar-sdk");
+      console.log("[AdminClient] signTransaction: parsing XDR with passphrase:", NETWORK_PASSPHRASE);
       const tx = TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE);
       tx.sign(keypair);
+      console.log("[AdminClient] signTransaction: signed by", keypair.publicKey());
       return { signedTxXdr: tx.toXDR(), signerAddress: keypair.publicKey() };
     },
   });
