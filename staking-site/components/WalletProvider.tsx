@@ -117,10 +117,14 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       xdr: string,
       opts?: { networkPassphrase?: string; address?: string }
     ) => {
-      const signOpts = {
-        networkPassphrase: opts?.networkPassphrase || NETWORK_PASSPHRASE,
-        address: opts?.address || publicKey || undefined,
-      };
+      // NOTE: We intentionally omit networkPassphrase from the signing opts.
+      // xBull has a bug where passing it triggers setHorizonByNetwork() which
+      // uses e.name instead of e.message in its catch block, causing a generic
+      // {code: -1, message: 'Error'} rejection. Wallets already know their
+      // configured network, and the XDR encodes the network hash.
+      const signOpts: Record<string, string | undefined> = {};
+      const addr = opts?.address || publicKey || undefined;
+      if (addr) signOpts.address = addr;
       console.log("[WalletProvider] signTransaction called", {
         xdrLength: xdr.length,
         xdrPreview: xdr.slice(0, 80) + "...",
