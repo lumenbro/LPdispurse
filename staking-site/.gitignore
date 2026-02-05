@@ -8,3 +8,4 @@ dist/
 next-env.d.ts
 referencerepo/
 referencerepo-swk/
+.vercel

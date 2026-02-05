@@ -5,6 +5,7 @@ import { useWallet } from "./WalletProvider";
 import { createReadClient, createUserClient } from "@/lib/contract";
 import type { PoolState, StakerInfo, MerkleRootData } from "@/lib/contract";
 import { CONTRACT_ID } from "@/lib/constants";
+import { RewardsTicker } from "./RewardsTicker";
 
 interface PoolData {
   index: number;
@@ -277,13 +278,20 @@ export function StakingDashboard() {
             </div>
           </div>
 
-          {/* Pending rewards */}
-          {connected && pool.pendingReward > 0n && (
-            <div className="mb-4 rounded-lg bg-lmnr-700/20 px-4 py-3">
-              <span className="text-sm text-gray-400">Pending Rewards</span>
-              <p className="text-xl font-bold text-green-400">
-                {formatLmnr(pool.pendingReward)} LMNR
-              </p>
+          {/* Pending rewards ticker */}
+          {connected && pool.stakerInfo && (
+            <div className="mb-4">
+              <RewardsTicker
+                accRewardPerShare={BigInt(pool.state.acc_reward_per_share)}
+                totalStaked={BigInt(pool.state.total_staked)}
+                lastRewardTime={BigInt(pool.state.last_reward_time)}
+                stakedAmount={BigInt(pool.stakerInfo.staked_amount)}
+                rewardDebt={BigInt(pool.stakerInfo.reward_debt)}
+                pendingRewards={BigInt(pool.stakerInfo.pending_rewards)}
+                contractPendingReward={pool.pendingReward}
+                onSync={fetchData}
+                syncInterval={30_000}
+              />
             </div>
           )}
 
