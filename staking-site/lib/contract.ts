@@ -321,16 +321,34 @@ async function rawInvokeContract(
     console.error(`[rawInvoke] ${functionName}: XDR roundtrip failed:`, e);
   }
 
-  // 7. Submit
-  console.log(`[rawInvoke] ${functionName}: submitting...`);
-  const sendResponse = await server.sendTransaction(assembled);
+  // 7. Submit - use raw JSON-RPC call to avoid SDK re-serialization
+  console.log(`[rawInvoke] ${functionName}: submitting via raw JSON-RPC...`);
+  const rpcResponse = await fetch(RPC_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "sendTransaction",
+      params: { transaction: signedXdr },
+    }),
+  });
+  const rpcJson = await rpcResponse.json();
+  console.log(`[rawInvoke] ${functionName}: raw RPC response:`, JSON.stringify(rpcJson, null, 2));
+
+  // Parse the response into the expected format
+  const sendResponse = rpcJson.result as {
+    status: string;
+    hash: string;
+    latestLedger: number;
+    errorResult?: any;
+  };
   console.log(`[rawInvoke] ${functionName}: status=${sendResponse.status}`);
 
   if (sendResponse.status === "ERROR") {
-    const errResult = (sendResponse as any).errorResult;
-    const errXdr = errResult?.toXDR?.("base64") ?? JSON.stringify(errResult);
-    console.error(`[rawInvoke] ${functionName}: ERROR:`, errXdr);
-    console.error(`[rawInvoke] ${functionName}: full response:`, JSON.stringify(sendResponse, null, 2));
+    const errResult = sendResponse.errorResult;
+    console.error(`[rawInvoke] ${functionName}: ERROR:`, JSON.stringify(errResult));
+    console.error(`[rawInvoke] ${functionName}: full response:`, JSON.stringify(rpcJson, null, 2));
 
     // Compare RPC hash with local hash
     const rpcHash = sendResponse.hash;
@@ -339,7 +357,7 @@ async function rawInvokeContract(
     console.error(`[rawInvoke] ${functionName}: local hash=${localHash}`);
     console.error(`[rawInvoke] ${functionName}: hash match=${rpcHash === localHash}`);
 
-    throw new Error(`Transaction send error: ${errXdr}`);
+    throw new Error(`Transaction send error: ${JSON.stringify(errResult)}`);
   }
 
   if (sendResponse.status !== "PENDING") {
