@@ -67,14 +67,14 @@ export async function snapshotPool(poolId: string): Promise<LpHolder[]> {
  */
 export async function processPool(snapshot: PoolSnapshot): Promise<{
   root: string;
-  epochId: bigint;
+  epochId: string;
   holderCount: number;
 }> {
   const { poolIndex, holders, ledger } = snapshot;
 
   if (holders.length === 0) {
     console.log(`Pool ${poolIndex}: no holders, skipping`);
-    return { root: "", epochId: 0n, holderCount: 0 };
+    return { root: "", epochId: "0", holderCount: 0 };
   }
 
   // Read current epoch from contract to determine next epoch_id
@@ -142,7 +142,7 @@ export async function processPool(snapshot: PoolSnapshot): Promise<{
 
   return {
     root: rootHex,
-    epochId: nextEpochId,
+    epochId: nextEpochId.toString(), // Convert BigInt to string for JSON serialization
     holderCount: holders.length,
   };
 }
