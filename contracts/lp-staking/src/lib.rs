@@ -141,6 +141,14 @@ impl LpStakingContract {
         Ok(())
     }
 
+    /// Transfer admin role to a new address.
+    pub fn set_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env, &admin)?;
+        storage::extend_instance_ttl(&env);
+        storage::set_admin(&env, &new_admin);
+        Ok(())
+    }
+
     /// Transfer LMNR into the contract for reward distribution.
     pub fn fund(env: Env, funder: Address, amount: i128) -> Result<(), ContractError> {
         if amount <= 0 {

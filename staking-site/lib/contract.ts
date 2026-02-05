@@ -83,6 +83,10 @@ export interface StakingClient {
   ): Promise<AssembledTransaction<any>>;
 
   // Admin functions
+  set_admin(
+    args: { admin: string; new_admin: string },
+    options?: any
+  ): Promise<AssembledTransaction<any>>;
   add_pool(
     args: { admin: string; pool_id: Buffer },
     options?: any

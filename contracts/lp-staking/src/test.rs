@@ -721,3 +721,35 @@ fn test_four_leaf_merkle_tree() {
         assert_eq!(pending, expected);
     }
 }
+
+#[test]
+fn test_set_admin() {
+    let t = setup_env();
+    let client = LpStakingContractClient::new(&t.env, &t.contract_id);
+
+    let new_admin = Address::generate(&t.env);
+
+    // Transfer admin to new_admin
+    client.set_admin(&t.admin, &new_admin);
+
+    // Old admin can no longer add pools
+    let pool_id = BytesN::from_array(&t.env, &[0xAA; 32]);
+    let result = client.try_add_pool(&t.admin, &pool_id);
+    assert!(result.is_err());
+
+    // New admin can add pools
+    let result = client.try_add_pool(&new_admin, &pool_id);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_set_admin_non_admin_fails() {
+    let t = setup_env();
+    let client = LpStakingContractClient::new(&t.env, &t.contract_id);
+
+    let rando = Address::generate(&t.env);
+    let new_admin = Address::generate(&t.env);
+
+    let result = client.try_set_admin(&rando, &new_admin);
+    assert!(result.is_err());
+}

@@ -41,6 +41,8 @@ export function AdminDashboard() {
   const [newRate, setNewRate] = useState("");
   const [fundAmount, setFundAmount] = useState("");
   const [removePoolIndex, setRemovePoolIndex] = useState("");
+  const [newAdminAddr, setNewAdminAddr] = useState("");
+  const [confirmTransfer, setConfirmTransfer] = useState(false);
 
   const isAdmin = connected && publicKey === ADMIN_WALLET;
 
@@ -240,6 +242,36 @@ export function AdminDashboard() {
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Cron trigger failed");
+    } finally {
+      setTxPending(null);
+    }
+  };
+
+  const handleTransferAdmin = async () => {
+    if (!publicKey || !signTransaction) return;
+    clearMessages();
+
+    const addr = newAdminAddr.trim();
+    if (!addr || addr.length !== 56 || !addr.startsWith("G")) {
+      setError("Enter a valid Stellar public key (G...).");
+      return;
+    }
+
+    setTxPending("transfer-admin");
+    try {
+      const client = createUserClient(publicKey, signTransaction);
+      const tx = await client.set_admin({
+        admin: publicKey,
+        new_admin: addr,
+      });
+      await tx.signAndSend();
+      setSuccess(
+        `Admin transferred to ${addr}. You must now update NEXT_PUBLIC_ADMIN_WALLET in Vercel and redeploy.`
+      );
+      setNewAdminAddr("");
+      setConfirmTransfer(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Transfer admin failed");
     } finally {
       setTxPending(null);
     }
@@ -523,6 +555,71 @@ export function AdminDashboard() {
         >
           {txPending === "cron" ? "Running..." : "Run Indexer Now"}
         </button>
+      </section>
+
+      {/* Transfer Admin */}
+      <section className="rounded-xl border border-red-800/30 bg-red-900/10 p-6">
+        <h2 className="mb-3 text-lg font-semibold text-red-300">
+          Transfer Admin
+        </h2>
+        <p className="mb-3 text-xs text-gray-400">
+          Irreversibly transfer contract admin to a new Stellar address.
+          You will lose all admin access immediately. After transferring,
+          you must update <code className="text-gray-300">NEXT_PUBLIC_ADMIN_WALLET</code> in
+          Vercel and redeploy.
+        </p>
+        <input
+          type="text"
+          value={newAdminAddr}
+          onChange={(e) => {
+            setNewAdminAddr(e.target.value);
+            setConfirmTransfer(false);
+          }}
+          placeholder="G... (new admin public key)"
+          className="mb-3 w-full rounded-lg border border-red-800/30 bg-lmnr-900/60 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 focus:border-red-400 focus:outline-none"
+        />
+        {!confirmTransfer ? (
+          <button
+            onClick={() => setConfirmTransfer(true)}
+            disabled={
+              txPending !== null ||
+              !newAdminAddr.trim() ||
+              newAdminAddr.trim().length !== 56 ||
+              !newAdminAddr.trim().startsWith("G")
+            }
+            className="rounded-lg border border-red-700 px-4 py-2 text-sm font-semibold text-red-300 hover:bg-red-900/30 disabled:opacity-50 transition"
+          >
+            Transfer Admin...
+          </button>
+        ) : (
+          <div className="space-y-3">
+            <div className="rounded-lg border border-red-700/50 bg-red-900/30 px-4 py-3 text-sm text-red-200">
+              Are you sure? This will transfer admin to{" "}
+              <span className="font-mono text-xs">
+                {newAdminAddr.trim().slice(0, 8)}...{newAdminAddr.trim().slice(-8)}
+              </span>
+              . This action cannot be undone from this wallet.
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={handleTransferAdmin}
+                disabled={txPending !== null}
+                className="rounded-lg bg-red-700 px-4 py-2 text-sm font-semibold text-white hover:bg-red-600 disabled:opacity-50 transition"
+              >
+                {txPending === "transfer-admin"
+                  ? "Transferring..."
+                  : "Confirm Transfer"}
+              </button>
+              <button
+                onClick={() => setConfirmTransfer(false)}
+                disabled={txPending !== null}
+                className="rounded-lg border border-gray-600 px-4 py-2 text-sm text-gray-300 hover:bg-gray-800 disabled:opacity-50 transition"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </section>
     </div>
   );
