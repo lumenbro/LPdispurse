@@ -5,8 +5,8 @@ import {
   nativeToScVal,
   Address,
   xdr,
+  authorizeEntry,
 } from "@stellar/stellar-sdk";
-import { authorizeEntry } from "@stellar/stellar-base";
 import { Server as RpcServer, Api } from "@stellar/stellar-sdk/rpc";
 import { assembleTransaction } from "@stellar/stellar-sdk/rpc";
 import {
@@ -162,11 +162,20 @@ async function rawInvokeContract(
 ): Promise<Api.GetSuccessfulTransactionResponse> {
   const server = new RpcServer(RPC_URL);
 
+  // Verify network passphrase (using Stellar SDK's hashing for consistency)
+  const Networks = { PUBLIC: "Public Global Stellar Network ; September 2015", TESTNET: "Test SDF Network ; September 2015" };
+  const isMainnet = NETWORK_PASSPHRASE === Networks.PUBLIC;
+  const isTestnet = NETWORK_PASSPHRASE === Networks.TESTNET;
+  console.log(`[rawInvoke] ${functionName}: NETWORK_PASSPHRASE=${NETWORK_PASSPHRASE}`);
+  console.log(`[rawInvoke] ${functionName}: isMainnet=${isMainnet}, isTestnet=${isTestnet}`);
+
   // 1. Load fresh account (sequence number)
   const account = await server.getAccount(keypair.publicKey());
   console.log(`[rawInvoke] ${functionName}: source=${keypair.publicKey()}, seq=${account.sequenceNumber()}`);
 
   // 2. Build unsigned transaction
+  console.log(`[rawInvoke] ${functionName}: CONTRACT_ID=${CONTRACT_ID}`);
+  console.log(`[rawInvoke] ${functionName}: admin arg (first)=${args[0]?.value?.()?.toString?.() || 'unknown'}`);
   const tx = new TransactionBuilder(account, {
     fee: "10000000", // 1 XLM max fee (generous for Soroban)
     networkPassphrase: NETWORK_PASSPHRASE,
@@ -208,6 +217,13 @@ async function rawInvokeContract(
       const credType = entry.credentials().switch().name;
       console.log(`[rawInvoke] ${functionName}: auth[${i}] credType=${credType}`);
 
+      // Log the full auth entry structure for debugging
+      const invocation = entry.rootInvocation();
+      const contractAddr = Address.fromScAddress(invocation.function().contractFn().contractAddress()).toString();
+      const funcName = invocation.function().contractFn().functionName().toString();
+      console.log(`[rawInvoke] ${functionName}: auth[${i}] invocation: contract=${contractAddr}, func=${funcName}`);
+      console.log(`[rawInvoke] ${functionName}: auth[${i}] entryXdr=${entry.toXDR("base64").slice(0, 100)}...`);
+
       if (credType === "sorobanCredentialsAddress") {
         const addr = entry.credentials().address();
         const addrStr = Address.fromScAddress(addr.address()).toString();
@@ -225,11 +241,14 @@ async function rawInvokeContract(
         const signedEntry = signed instanceof Promise ? await signed : signed;
 
         // Replace in the simulation result so assembleTransaction picks it up
-        // (simResponse is already parsed — result.auth contains XDR objects)
         simSuccess.result.auth[i] = signedEntry as any;
         console.log(`[rawInvoke] ${functionName}: auth entry ${i} signed`);
+      } else {
+        // For sourceAccountCredentials, ensure the parsed entry is used (not XDR string)
+        // This ensures consistent handling by assembleTransaction
+        simSuccess.result.auth[i] = entry as any;
+        console.log(`[rawInvoke] ${functionName}: auth entry ${i} kept as sourceAccount (parsed)`);
       }
-      // sourceAccountCredentials don't need separate signing
     }
   }
 
@@ -244,6 +263,20 @@ async function rawInvokeContract(
   console.log(`[rawInvoke] ${functionName}: assembled fee=${assembled.fee}`);
   console.log(`[rawInvoke] ${functionName}: assembled sigs before sign=${assembled.signatures.length}`);
 
+  // Debug: check the auth on the assembled operation
+  const ops = assembled.operations;
+  if (ops.length > 0 && ops[0].type === "invokeHostFunction") {
+    const invokeOp = ops[0] as any;
+    console.log(`[rawInvoke] ${functionName}: assembled op auth count=${invokeOp.auth?.length ?? 0}`);
+    if (invokeOp.auth?.length) {
+      for (let i = 0; i < invokeOp.auth.length; i++) {
+        const auth = invokeOp.auth[i];
+        const cred = auth.credentials();
+        console.log(`[rawInvoke] ${functionName}: assembled auth[${i}] credType=${cred.switch().name}`);
+      }
+    }
+  }
+
   // Debug: log the hash that will be signed
   const txHash = assembled.hash();
   console.log(`[rawInvoke] ${functionName}: txHash=${txHash.toString("hex")}`);
@@ -254,14 +287,39 @@ async function rawInvokeContract(
 
   // 6. Sign the transaction envelope
   console.log(`[rawInvoke] ${functionName}: signing envelope...`);
+
+  // Verify hash before signing
+  const hashBeforeSign = assembled.hash();
+  console.log(`[rawInvoke] ${functionName}: hashBeforeSign=${hashBeforeSign.toString("hex")}`);
+
   assembled.sign(keypair);
   console.log(`[rawInvoke] ${functionName}: sigs after sign=${assembled.signatures.length}`);
   console.log(`[rawInvoke] ${functionName}: sig hint=${assembled.signatures[0]?.hint().toString("hex")}`);
+
+  // Verify hash after signing (should be same)
+  const hashAfterSign = assembled.hash();
+  console.log(`[rawInvoke] ${functionName}: hashAfterSign=${hashAfterSign.toString("hex")}`);
+  console.log(`[rawInvoke] ${functionName}: hash match=${hashBeforeSign.equals(hashAfterSign)}`);
+
+  // Verify signature hint matches keypair
+  const expectedHint = keypair.rawPublicKey().slice(-4).toString("hex");
+  const actualHint = assembled.signatures[0]?.hint().toString("hex");
+  console.log(`[rawInvoke] ${functionName}: expectedHint=${expectedHint}, actualHint=${actualHint}, match=${expectedHint === actualHint}`);
 
   // Debug: log the full signed XDR (truncated for readability)
   const signedXdr = assembled.toXDR();
   console.log(`[rawInvoke] ${functionName}: signedXdr length=${signedXdr.length}`);
   console.log(`[rawInvoke] ${functionName}: signedXdr (first 200)=${signedXdr.slice(0, 200)}`);
+
+  // Verify XDR can be round-tripped
+  try {
+    const reparsed = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
+    const reparsedHash = reparsed.hash();
+    console.log(`[rawInvoke] ${functionName}: reparsedHash=${reparsedHash.toString("hex")}`);
+    console.log(`[rawInvoke] ${functionName}: XDR roundtrip hash match=${hashAfterSign.equals(reparsedHash)}`);
+  } catch (e) {
+    console.error(`[rawInvoke] ${functionName}: XDR roundtrip failed:`, e);
+  }
 
   // 7. Submit
   console.log(`[rawInvoke] ${functionName}: submitting...`);
@@ -273,6 +331,14 @@ async function rawInvokeContract(
     const errXdr = errResult?.toXDR?.("base64") ?? JSON.stringify(errResult);
     console.error(`[rawInvoke] ${functionName}: ERROR:`, errXdr);
     console.error(`[rawInvoke] ${functionName}: full response:`, JSON.stringify(sendResponse, null, 2));
+
+    // Compare RPC hash with local hash
+    const rpcHash = sendResponse.hash;
+    const localHash = hashAfterSign.toString("hex");
+    console.error(`[rawInvoke] ${functionName}: RPC hash=${rpcHash}`);
+    console.error(`[rawInvoke] ${functionName}: local hash=${localHash}`);
+    console.error(`[rawInvoke] ${functionName}: hash match=${rpcHash === localHash}`);
+
     throw new Error(`Transaction send error: ${errXdr}`);
   }
 
