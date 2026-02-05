@@ -117,13 +117,34 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       xdr: string,
       opts?: { networkPassphrase?: string; address?: string }
     ) => {
-      const { StellarWalletsKit } = await import(
-        "@creit-tech/stellar-wallets-kit/sdk"
-      );
-      return StellarWalletsKit.signTransaction(xdr, {
+      const signOpts = {
         networkPassphrase: opts?.networkPassphrase || NETWORK_PASSPHRASE,
         address: opts?.address || publicKey || undefined,
+      };
+      console.log("[WalletProvider] signTransaction called", {
+        xdrLength: xdr.length,
+        xdrPreview: xdr.slice(0, 80) + "...",
+        opts: signOpts,
       });
+      try {
+        const { StellarWalletsKit } = await import(
+          "@creit-tech/stellar-wallets-kit/sdk"
+        );
+        console.log("[WalletProvider] Calling StellarWalletsKit.signTransaction...");
+        const result = await StellarWalletsKit.signTransaction(xdr, signOpts);
+        console.log("[WalletProvider] signTransaction succeeded", {
+          signedXdrLength: result.signedTxXdr?.length,
+          signerAddress: result.signerAddress,
+        });
+        return result;
+      } catch (err: any) {
+        console.error("[WalletProvider] signTransaction FAILED", {
+          code: err?.code,
+          message: err?.message,
+          error: err,
+        });
+        throw err;
+      }
     },
     [publicKey]
   );

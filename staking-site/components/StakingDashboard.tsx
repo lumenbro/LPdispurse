@@ -117,7 +117,7 @@ export function StakingDashboard() {
     setError(null);
 
     try {
-      // Fetch proof from our API
+      console.log("[Staking] stake: fetching proof...", { poolIndex, publicKey });
       const res = await fetch(`/api/proof/${poolIndex}/${publicKey}`);
       if (!res.ok) {
         const data = await res.json();
@@ -127,10 +127,12 @@ export function StakingDashboard() {
       }
 
       const proofData = await res.json();
+      console.log("[Staking] stake: proof received", { balance: proofData.balance, proofLen: proofData.proof?.length });
       const proofBuffers = proofData.proof.map((hex: string) =>
         Buffer.from(hex, "hex")
       );
 
+      console.log("[Staking] stake: simulating tx...");
       const client = createUserClient(publicKey, signTransaction);
       const tx = await client.stake({
         user: publicKey,
@@ -138,10 +140,13 @@ export function StakingDashboard() {
         lp_balance: BigInt(proofData.balance),
         proof: proofBuffers,
       });
+      console.log("[Staking] stake: simulation done, calling signAndSend...");
       await tx.signAndSend();
+      console.log("[Staking] stake: success");
       await fetchData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Stake failed");
+    } catch (err: any) {
+      console.error("[Staking] stake FAILED:", err);
+      setError(err?.message || JSON.stringify(err) || "Stake failed");
     } finally {
       setTxPending(null);
     }
@@ -153,15 +158,19 @@ export function StakingDashboard() {
     setError(null);
 
     try {
+      console.log("[Staking] claim: simulating tx...", { poolIndex });
       const client = createUserClient(publicKey, signTransaction);
       const tx = await client.claim({
         user: publicKey,
         pool_index: poolIndex,
       });
+      console.log("[Staking] claim: simulation done, calling signAndSend...");
       await tx.signAndSend();
+      console.log("[Staking] claim: success");
       await fetchData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Claim failed");
+    } catch (err: any) {
+      console.error("[Staking] claim FAILED:", err);
+      setError(err?.message || JSON.stringify(err) || "Claim failed");
     } finally {
       setTxPending(null);
     }
@@ -173,15 +182,19 @@ export function StakingDashboard() {
     setError(null);
 
     try {
+      console.log("[Staking] unstake: simulating tx...", { poolIndex });
       const client = createUserClient(publicKey, signTransaction);
       const tx = await client.unstake({
         user: publicKey,
         pool_index: poolIndex,
       });
+      console.log("[Staking] unstake: simulation done, calling signAndSend...");
       await tx.signAndSend();
+      console.log("[Staking] unstake: success");
       await fetchData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unstake failed");
+    } catch (err: any) {
+      console.error("[Staking] unstake FAILED:", err);
+      setError(err?.message || JSON.stringify(err) || "Unstake failed");
     } finally {
       setTxPending(null);
     }

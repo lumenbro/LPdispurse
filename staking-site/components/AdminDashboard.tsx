@@ -119,17 +119,24 @@ export function AdminDashboard() {
 
     setTxPending("add-pool");
     try {
+      console.log("[Admin] add_pool: creating client...");
       const client = createUserClient(publicKey, signTransaction);
+      console.log("[Admin] add_pool: simulating tx...");
       const tx = await client.add_pool({
         admin: publicKey,
         pool_id: Buffer.from(hex, "hex"),
       });
+      console.log("[Admin] add_pool: simulation done, calling signAndSend...");
+      console.log("[Admin] add_pool: needsNonInvokerSigningBy =", tx.needsNonInvokerSigningBy());
       await tx.signAndSend();
+      console.log("[Admin] add_pool: success, result =", tx.result);
       setSuccess(`Pool added at index ${tx.result ?? pools.length}.`);
       setNewPoolId("");
       await fetchData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Add pool failed");
+    } catch (err: any) {
+      console.error("[Admin] add_pool FAILED:", err);
+      const msg = err?.message || JSON.stringify(err);
+      setError(`Add pool failed: ${msg}`);
     } finally {
       setTxPending(null);
     }
@@ -147,17 +154,21 @@ export function AdminDashboard() {
 
     setTxPending("remove-pool");
     try {
+      console.log("[Admin] remove_pool: simulating tx...");
       const client = createUserClient(publicKey, signTransaction);
       const tx = await client.remove_pool({
         admin: publicKey,
         pool_index: idx,
       });
+      console.log("[Admin] remove_pool: simulation done, calling signAndSend...");
       await tx.signAndSend();
+      console.log("[Admin] remove_pool: success");
       setSuccess(`Pool #${idx} removed.`);
       setRemovePoolIndex("");
       await fetchData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Remove pool failed");
+    } catch (err: any) {
+      console.error("[Admin] remove_pool FAILED:", err);
+      setError(`Remove pool failed: ${err?.message || JSON.stringify(err)}`);
     } finally {
       setTxPending(null);
     }
@@ -180,19 +191,23 @@ export function AdminDashboard() {
 
     setTxPending("set-rate");
     try {
+      console.log("[Admin] set_reward_rate: simulating tx...", { stroopsPerSec: stroopsPerSec.toString() });
       const client = createUserClient(publicKey, signTransaction);
       const tx = await client.set_reward_rate({
         admin: publicKey,
         new_rate: stroopsPerSec,
       });
+      console.log("[Admin] set_reward_rate: simulation done, calling signAndSend...");
       await tx.signAndSend();
+      console.log("[Admin] set_reward_rate: success");
       setSuccess(
         `Reward rate set to ${lmnrPerDay} LMNR/day (${stroopsPerSec} stroops/sec).`
       );
       setNewRate("");
       await fetchData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Set rate failed");
+    } catch (err: any) {
+      console.error("[Admin] set_reward_rate FAILED:", err);
+      setError(`Set rate failed: ${err?.message || JSON.stringify(err)}`);
     } finally {
       setTxPending(null);
     }
@@ -212,17 +227,21 @@ export function AdminDashboard() {
 
     setTxPending("fund");
     try {
+      console.log("[Admin] fund: simulating tx...", { stroops: stroops.toString() });
       const client = createUserClient(publicKey, signTransaction);
       const tx = await client.fund({
         funder: publicKey,
         amount: stroops,
       });
+      console.log("[Admin] fund: simulation done, calling signAndSend...");
       await tx.signAndSend();
+      console.log("[Admin] fund: success");
       setSuccess(`Funded ${lmnr} LMNR into the contract.`);
       setFundAmount("");
       await fetchData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Fund failed");
+    } catch (err: any) {
+      console.error("[Admin] fund FAILED:", err);
+      setError(`Fund failed: ${err?.message || JSON.stringify(err)}`);
     } finally {
       setTxPending(null);
     }
@@ -259,19 +278,23 @@ export function AdminDashboard() {
 
     setTxPending("transfer-admin");
     try {
+      console.log("[Admin] set_admin: simulating tx...", { new_admin: addr });
       const client = createUserClient(publicKey, signTransaction);
       const tx = await client.set_admin({
         admin: publicKey,
         new_admin: addr,
       });
+      console.log("[Admin] set_admin: simulation done, calling signAndSend...");
       await tx.signAndSend();
+      console.log("[Admin] set_admin: success");
       setSuccess(
         `Admin transferred to ${addr}. You must now update NEXT_PUBLIC_ADMIN_WALLET in Vercel and redeploy.`
       );
       setNewAdminAddr("");
       setConfirmTransfer(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Transfer admin failed");
+    } catch (err: any) {
+      console.error("[Admin] set_admin FAILED:", err);
+      setError(`Transfer admin failed: ${err?.message || JSON.stringify(err)}`);
     } finally {
       setTxPending(null);
     }
