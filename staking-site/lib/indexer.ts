@@ -112,19 +112,13 @@ export async function processPool(snapshot: PoolSnapshot): Promise<{
     );
   }
 
-  // Post root on-chain
+  // Post root on-chain (raw Soroban RPC — bypasses ContractClient signing)
   const rootHex = tree.root.toString("hex");
   console.log(
     `Pool ${poolIndex}: posting root ${rootHex} (epoch ${nextEpochId}, ${holders.length} holders)`
   );
 
-  const tx = await adminClient.set_merkle_root({
-    admin: adminClient.publicKey,
-    pool_index: poolIndex,
-    root: tree.root,
-    snapshot_ledger: ledger,
-  });
-  await adminClient.signAndSendTx(tx);
+  await adminClient.rawSetMerkleRoot(poolIndex, tree.root, ledger);
 
   // Store a manifest for this epoch
   const manifest = {

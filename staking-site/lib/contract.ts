@@ -1,5 +1,14 @@
-import { Keypair } from "@stellar/stellar-sdk";
+import {
+  Keypair,
+  TransactionBuilder,
+  Operation,
+  nativeToScVal,
+  Address,
+  xdr,
+} from "@stellar/stellar-sdk";
 import { authorizeEntry } from "@stellar/stellar-base";
+import { Server as RpcServer, Api } from "@stellar/stellar-sdk/rpc";
+import { assembleTransaction } from "@stellar/stellar-sdk/rpc";
 import {
   AssembledTransaction,
   Client as ContractClient,
@@ -142,13 +151,149 @@ export function createReadClient(): StakingClient {
 }
 
 /**
+ * Build, simulate, sign, and submit a Soroban contract invocation from scratch.
+ * Completely bypasses ContractClient's sign()/signAndSend() flow to avoid
+ * cloneFrom() XDR round-trip issues that cause txBadAuth.
+ */
+async function rawInvokeContract(
+  keypair: Keypair,
+  functionName: string,
+  args: xdr.ScVal[]
+): Promise<Api.GetSuccessfulTransactionResponse> {
+  const server = new RpcServer(RPC_URL);
+
+  // 1. Load fresh account (sequence number)
+  const account = await server.getAccount(keypair.publicKey());
+  console.log(`[rawInvoke] ${functionName}: source=${keypair.publicKey()}, seq=${account.sequenceNumber()}`);
+
+  // 2. Build unsigned transaction
+  const tx = new TransactionBuilder(account, {
+    fee: "10000000", // 1 XLM max fee (generous for Soroban)
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      Operation.invokeContractFunction({
+        contract: CONTRACT_ID,
+        function: functionName,
+        args,
+      })
+    )
+    .setTimeout(60)
+    .build();
+
+  // 3. Simulate
+  console.log(`[rawInvoke] ${functionName}: simulating...`);
+  const simResponse = await server.simulateTransaction(tx);
+
+  if (Api.isSimulationError(simResponse)) {
+    console.error(`[rawInvoke] ${functionName}: simulation error:`, (simResponse as any).error);
+    throw new Error(`Simulation failed: ${(simResponse as any).error}`);
+  }
+
+  const simSuccess = simResponse as Api.SimulateTransactionSuccessResponse;
+
+  // 4. Sign auth entries from simulation BEFORE assembling
+  //    (auth entries in the simulation response are templates with void signatures)
+  if (simSuccess.result?.auth?.length) {
+    console.log(`[rawInvoke] ${functionName}: ${simSuccess.result.auth.length} auth entries from simulation`);
+    const latestLedger = (await server.getLatestLedger()).sequence;
+
+    for (let i = 0; i < simSuccess.result.auth.length; i++) {
+      const entryXdr = simSuccess.result.auth[i];
+      // Parse the auth entry XDR string
+      const entry = typeof entryXdr === "string"
+        ? xdr.SorobanAuthorizationEntry.fromXDR(entryXdr, "base64")
+        : entryXdr;
+
+      const credType = entry.credentials().switch().name;
+      console.log(`[rawInvoke] ${functionName}: auth[${i}] credType=${credType}`);
+
+      if (credType === "sorobanCredentialsAddress") {
+        const addr = entry.credentials().address();
+        const addrStr = Address.fromScAddress(addr.address()).toString();
+        const sigType = addr.signature().switch().name;
+        console.log(`[rawInvoke] ${functionName}: auth[${i}] address=${addrStr}, sigType=${sigType}, expiry=${addr.signatureExpirationLedger()}`);
+
+        // Sign with authorizeEntry
+        console.log(`[rawInvoke] ${functionName}: signing auth entry ${i}...`);
+        const signed = authorizeEntry(
+          entry,
+          keypair,
+          latestLedger + 200,
+          NETWORK_PASSPHRASE
+        );
+        const signedEntry = signed instanceof Promise ? await signed : signed;
+
+        // Replace in the simulation result so assembleTransaction picks it up
+        // (simResponse is already parsed — result.auth contains XDR objects)
+        simSuccess.result.auth[i] = signedEntry as any;
+        console.log(`[rawInvoke] ${functionName}: auth entry ${i} signed`);
+      }
+      // sourceAccountCredentials don't need separate signing
+    }
+  }
+
+  // 5. Assemble (adds sorobanData, resource fees, and auth from simulation)
+  console.log(`[rawInvoke] ${functionName}: assembling...`);
+  const assembled = assembleTransaction(tx, simResponse).build();
+
+  // 6. Sign the transaction envelope
+  console.log(`[rawInvoke] ${functionName}: signing envelope...`);
+  assembled.sign(keypair);
+
+  // 7. Submit
+  console.log(`[rawInvoke] ${functionName}: submitting...`);
+  const sendResponse = await server.sendTransaction(assembled);
+  console.log(`[rawInvoke] ${functionName}: status=${sendResponse.status}`);
+
+  if (sendResponse.status === "ERROR") {
+    const errResult = (sendResponse as any).errorResult;
+    const errXdr = errResult?.toXDR?.("base64") ?? JSON.stringify(errResult);
+    console.error(`[rawInvoke] ${functionName}: ERROR:`, errXdr);
+    console.error(`[rawInvoke] ${functionName}: full response:`, JSON.stringify(sendResponse, null, 2));
+    throw new Error(`Transaction send error: ${errXdr}`);
+  }
+
+  if (sendResponse.status !== "PENDING") {
+    throw new Error(`Unexpected send status: ${sendResponse.status}`);
+  }
+
+  // 8. Poll for result
+  const hash = sendResponse.hash;
+  console.log(`[rawInvoke] ${functionName}: tx hash=${hash}, polling...`);
+  const start = Date.now();
+  let getResponse = await server.getTransaction(hash);
+  while (getResponse.status === "NOT_FOUND") {
+    if (Date.now() - start > 60000) {
+      throw new Error(`Transaction timed out after 60s. Hash: ${hash}`);
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+    getResponse = await server.getTransaction(hash);
+  }
+
+  console.log(`[rawInvoke] ${functionName}: final status=${getResponse.status}`);
+  if (getResponse.status === "SUCCESS") {
+    return getResponse as Api.GetSuccessfulTransactionResponse;
+  }
+
+  throw new Error(
+    `Transaction failed: ${getResponse.status}. Hash: ${hash}`
+  );
+}
+
+/**
  * Admin client for the indexer cron (signs with ADMIN_SECRET_KEY).
- * Returns a client with a `signAndSendTx` helper that properly handles
- * Soroban auth entry signing before submitting.
+ * Uses ContractClient for read-only queries and signAndSendTx for mutations
+ * (which builds/signs/submits transactions from scratch via raw Soroban RPC).
  */
 export function createAdminClient(): StakingClient & {
   publicKey: string;
   signAndSendTx: (tx: AssembledTransaction<any>) => Promise<any>;
+  rawSetMerkleRoot: (
+    poolIndex: number,
+    root: Buffer,
+    snapshotLedger: number
+  ) => Promise<Api.GetSuccessfulTransactionResponse>;
 } {
   const secret = process.env.ADMIN_SECRET_KEY;
   if (!secret) throw new Error("ADMIN_SECRET_KEY not set");
@@ -159,45 +304,85 @@ export function createAdminClient(): StakingClient & {
 
   const client = makeClient({
     publicKey: keypair.publicKey(),
-    signTransaction: async (xdr: string) => {
-      const { TransactionBuilder } = await import("@stellar/stellar-sdk");
-      const tx = TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE);
+    signTransaction: async (txXdr: string) => {
+      const tx = TransactionBuilder.fromXDR(txXdr, NETWORK_PASSPHRASE);
       tx.sign(keypair);
       return { signedTxXdr: tx.toXDR(), signerAddress: keypair.publicKey() };
     },
   });
 
   /**
-   * Sign Soroban auth entries with the admin keypair, then sign envelope and send.
-   * Soroban require_auth() creates Address-credential auth entries that need
-   * explicit signing — signAndSend() alone only signs the envelope.
+   * Generic signAndSendTx that bypasses ContractClient's sign() entirely.
+   * Accesses the assembled (simulated) transaction directly, signs it, submits it.
    */
-  const signAndSendTx = async (tx: AssembledTransaction<any>) => {
-    // Sign any Soroban auth entries that need the admin's signature
-    try {
-      await tx.signAuthEntries({
-        address: keypair.publicKey(),
-        authorizeEntry: async (entry, signer, validUntilLedgerSeq, networkPassphrase) => {
-          console.log("[AdminClient] Signing auth entry for", keypair.publicKey());
-          return authorizeEntry(
-            entry,
-            keypair,
-            validUntilLedgerSeq,
-            networkPassphrase ?? NETWORK_PASSPHRASE
-          );
-        },
-      });
-    } catch (e: any) {
-      // NoUnsignedNonInvokerAuthEntriesError — no auth entries to sign
-      console.log("[AdminClient] signAuthEntries skipped:", e?.message ?? e);
+  const signAndSendTx = async (assembled: AssembledTransaction<any>) => {
+    const server = new RpcServer(RPC_URL);
+    const builtTx = (assembled as any).built;
+
+    if (!builtTx) {
+      throw new Error("Transaction not yet assembled/simulated");
     }
-    // Sign the transaction envelope and submit
-    return tx.signAndSend();
+
+    // Log diagnostics
+    console.log("[signAndSendTx] source:", builtTx.source);
+    console.log("[signAndSendTx] operations:", builtTx.operations?.length);
+    const op = builtTx.operations?.[0];
+    if (op?.auth) {
+      for (let i = 0; i < op.auth.length; i++) {
+        console.log(`[signAndSendTx] auth[${i}] type: ${op.auth[i].credentials().switch().name}`);
+      }
+    }
+
+    // Sign envelope directly (no cloneFrom rebuild)
+    builtTx.sign(keypair);
+
+    // Submit
+    const sendResponse = await server.sendTransaction(builtTx);
+    console.log("[signAndSendTx] status:", sendResponse.status);
+
+    if (sendResponse.status === "ERROR") {
+      const errResult = (sendResponse as any).errorResult;
+      console.error("[signAndSendTx] errorResult:", errResult?.toXDR?.("base64") ?? JSON.stringify(errResult));
+      throw new Error(`Send failed: ${sendResponse.status}`);
+    }
+
+    if (sendResponse.status === "PENDING") {
+      const hash = sendResponse.hash;
+      const start = Date.now();
+      let getResponse = await server.getTransaction(hash);
+      while (getResponse.status === "NOT_FOUND") {
+        if (Date.now() - start > 60000) break;
+        await new Promise((r) => setTimeout(r, 2000));
+        getResponse = await server.getTransaction(hash);
+      }
+      if (getResponse.status === "SUCCESS") return getResponse;
+      throw new Error(`Transaction failed: ${getResponse.status}`);
+    }
+
+    throw new Error(`Unexpected status: ${sendResponse.status}`);
+  };
+
+  /**
+   * Build set_merkle_root transaction entirely from scratch.
+   * This is the nuclear option — zero dependency on ContractClient for signing.
+   */
+  const rawSetMerkleRoot = (
+    poolIndex: number,
+    root: Buffer,
+    snapshotLedger: number
+  ) => {
+    return rawInvokeContract(keypair, "set_merkle_root", [
+      new Address(keypair.publicKey()).toScVal(), // admin
+      nativeToScVal(poolIndex, { type: "u32" }), // pool_index
+      xdr.ScVal.scvBytes(root), // root: BytesN<32>
+      nativeToScVal(snapshotLedger, { type: "u32" }), // snapshot_ledger
+    ]);
   };
 
   return Object.assign(client, {
     publicKey: keypair.publicKey(),
     signAndSendTx,
+    rawSetMerkleRoot,
   });
 }
 
