@@ -1,4 +1,5 @@
 import { Keypair } from "@stellar/stellar-sdk";
+import { authorizeEntry } from "@stellar/stellar-base";
 import {
   AssembledTransaction,
   Client as ContractClient,
@@ -142,8 +143,13 @@ export function createReadClient(): StakingClient {
 
 /**
  * Admin client for the indexer cron (signs with ADMIN_SECRET_KEY).
+ * Returns a client with a `signAndSendTx` helper that properly handles
+ * Soroban auth entry signing before submitting.
  */
-export function createAdminClient(): StakingClient & { publicKey: string } {
+export function createAdminClient(): StakingClient & {
+  publicKey: string;
+  signAndSendTx: (tx: AssembledTransaction<any>) => Promise<any>;
+} {
   const secret = process.env.ADMIN_SECRET_KEY;
   if (!secret) throw new Error("ADMIN_SECRET_KEY not set");
   const keypair = Keypair.fromSecret(secret);
@@ -155,15 +161,44 @@ export function createAdminClient(): StakingClient & { publicKey: string } {
     publicKey: keypair.publicKey(),
     signTransaction: async (xdr: string) => {
       const { TransactionBuilder } = await import("@stellar/stellar-sdk");
-      console.log("[AdminClient] signTransaction: parsing XDR with passphrase:", NETWORK_PASSPHRASE);
       const tx = TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE);
       tx.sign(keypair);
-      console.log("[AdminClient] signTransaction: signed by", keypair.publicKey());
       return { signedTxXdr: tx.toXDR(), signerAddress: keypair.publicKey() };
     },
   });
 
-  return Object.assign(client, { publicKey: keypair.publicKey() });
+  /**
+   * Sign Soroban auth entries with the admin keypair, then sign envelope and send.
+   * Soroban require_auth() creates Address-credential auth entries that need
+   * explicit signing — signAndSend() alone only signs the envelope.
+   */
+  const signAndSendTx = async (tx: AssembledTransaction<any>) => {
+    // Sign any Soroban auth entries that need the admin's signature
+    try {
+      await tx.signAuthEntries({
+        address: keypair.publicKey(),
+        authorizeEntry: async (entry, signer, validUntilLedgerSeq, networkPassphrase) => {
+          console.log("[AdminClient] Signing auth entry for", keypair.publicKey());
+          return authorizeEntry(
+            entry,
+            keypair,
+            validUntilLedgerSeq,
+            networkPassphrase ?? NETWORK_PASSPHRASE
+          );
+        },
+      });
+    } catch (e: any) {
+      // NoUnsignedNonInvokerAuthEntriesError — no auth entries to sign
+      console.log("[AdminClient] signAuthEntries skipped:", e?.message ?? e);
+    }
+    // Sign the transaction envelope and submit
+    return tx.signAndSend();
+  };
+
+  return Object.assign(client, {
+    publicKey: keypair.publicKey(),
+    signAndSendTx,
+  });
 }
 
 /**

@@ -124,7 +124,7 @@ export async function processPool(snapshot: PoolSnapshot): Promise<{
     root: tree.root,
     snapshot_ledger: ledger,
   });
-  await tx.signAndSend();
+  await adminClient.signAndSendTx(tx);
 
   // Store a manifest for this epoch
   const manifest = {
