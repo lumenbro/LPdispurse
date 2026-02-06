@@ -4,6 +4,29 @@
 
 body {
   @apply bg-lmnr-950 text-gray-100;
+  position: relative;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  background: url("/bg-lmnr.jpg") center top / cover no-repeat;
+  opacity: 0.15;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(
+    to bottom,
+    rgba(5, 10, 20, 0.6) 0%,
+    rgba(5, 10, 20, 0.85) 40%,
+    rgba(5, 10, 20, 0.95) 100%
+  );
 }
 
 /* Stellar Wallets Kit modal - hide scrollbars globally */
