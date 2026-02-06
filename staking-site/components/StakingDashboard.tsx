@@ -279,6 +279,14 @@ export function StakingDashboard() {
         </div>
       </div>
 
+      {/* Risk-free notice */}
+      <div className="rounded-xl border border-lmnr-700/20 bg-lmnr-900/30 px-5 py-4 text-sm text-gray-300 leading-relaxed">
+        <span className="font-semibold text-lmnr-200">Your LP tokens never leave your wallet.</span>{" "}
+        Staking is risk-free — no tokens are transferred or locked. The system periodically
+        snapshots your SDEX LP balance and tracks rewards based on your share. You retain
+        full control of your liquidity at all times.
+      </div>
+
       {error && (
         <div className="rounded-lg border border-red-800/40 bg-red-900/20 px-4 py-3 text-sm text-red-300">
           {error}
