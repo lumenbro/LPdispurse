@@ -42,6 +42,7 @@ export function StakingDashboard() {
   const { publicKey, connected, signTransaction } = useWallet();
   const [pools, setPools] = useState<PoolData[]>([]);
   const [rewardBalance, setRewardBalance] = useState<bigint>(0n);
+  const [rewardRate, setRewardRate] = useState<bigint>(0n);
   const [loading, setLoading] = useState(true);
   const [txPending, setTxPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +64,13 @@ export function StakingDashboard() {
 
       const balTx = await client.reward_balance();
       setRewardBalance(BigInt(balTx.result));
+
+      try {
+        const rateTx = await client.get_reward_rate();
+        setRewardRate(BigInt(rateTx.result));
+      } catch {
+        // Contract may not have get_reward_rate yet (pre-upgrade)
+      }
 
       const poolData: PoolData[] = [];
       const balancesMap: Record<number, UserPoolBalances> = {};
@@ -355,17 +363,14 @@ export function StakingDashboard() {
           {connected && pool.stakerInfo && (
             <div className="mb-4">
               <RewardsTicker
-                accRewardPerShare={BigInt(pool.state.acc_reward_per_share)}
                 totalStaked={BigInt(pool.state.total_staked)}
-                lastRewardTime={BigInt(pool.state.last_reward_time)}
                 stakedAmount={BigInt(pool.stakerInfo.staked_amount)}
-                rewardDebt={BigInt(pool.stakerInfo.reward_debt)}
-                pendingRewards={BigInt(pool.stakerInfo.pending_rewards)}
                 isCurrentEpoch={
                   !!pool.merkleRoot &&
                   BigInt(pool.stakerInfo.epoch_id) === BigInt(pool.merkleRoot.epoch_id)
                 }
                 contractPendingReward={pool.pendingReward}
+                rewardRate={rewardRate}
                 onSync={fetchData}
                 syncInterval={30_000}
               />

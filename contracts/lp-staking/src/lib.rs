@@ -522,6 +522,11 @@ impl LpStakingContract {
         storage::get_pool_id(&env, pool_index)
     }
 
+    /// Global reward rate in LMNR stroops per second.
+    pub fn get_reward_rate(env: Env) -> i128 {
+        storage::get_reward_rate(&env)
+    }
+
     /// Contract's LMNR balance available for rewards.
     pub fn reward_balance(env: Env) -> i128 {
         let lmnr_token = storage::get_lmnr_token(&env);

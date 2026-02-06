@@ -72,6 +72,7 @@ export interface StakingClient {
     options?: any
   ): Promise<AssembledTransaction<bigint>>;
   reward_balance(options?: any): Promise<AssembledTransaction<bigint>>;
+  get_reward_rate(options?: any): Promise<AssembledTransaction<bigint>>;
 
   // User functions
   stake(
@@ -93,6 +94,14 @@ export interface StakingClient {
   ): Promise<AssembledTransaction<any>>;
 
   // Admin functions
+  update_stake(
+    args: { admin: string; user: string; pool_index: number; new_amount: bigint },
+    options?: any
+  ): Promise<AssembledTransaction<any>>;
+  withdraw(
+    args: { admin: string; amount: bigint },
+    options?: any
+  ): Promise<AssembledTransaction<any>>;
   set_admin(
     args: { admin: string; new_admin: string },
     options?: any
@@ -400,6 +409,14 @@ export function createAdminClient(): StakingClient & {
     root: Buffer,
     snapshotLedger: number
   ) => Promise<Api.GetSuccessfulTransactionResponse>;
+  rawUpdateStake: (
+    poolIndex: number,
+    user: string,
+    newAmount: bigint
+  ) => Promise<Api.GetSuccessfulTransactionResponse>;
+  rawWithdraw: (
+    amount: bigint
+  ) => Promise<Api.GetSuccessfulTransactionResponse>;
 } {
   const secret = process.env.ADMIN_SECRET_KEY;
   if (!secret) throw new Error("ADMIN_SECRET_KEY not set");
@@ -485,10 +502,32 @@ export function createAdminClient(): StakingClient & {
     ]);
   };
 
+  const rawUpdateStake = (
+    poolIndex: number,
+    user: string,
+    newAmount: bigint
+  ) => {
+    return rawInvokeContract(keypair, "update_stake", [
+      new Address(keypair.publicKey()).toScVal(), // admin
+      new Address(user).toScVal(), // user
+      nativeToScVal(poolIndex, { type: "u32" }), // pool_index
+      nativeToScVal(newAmount, { type: "i128" }), // new_amount
+    ]);
+  };
+
+  const rawWithdraw = (amount: bigint) => {
+    return rawInvokeContract(keypair, "withdraw", [
+      new Address(keypair.publicKey()).toScVal(), // admin
+      nativeToScVal(amount, { type: "i128" }), // amount
+    ]);
+  };
+
   return Object.assign(client, {
     publicKey: keypair.publicKey(),
     signAndSendTx,
     rawSetMerkleRoot,
+    rawUpdateStake,
+    rawWithdraw,
   });
 }
 

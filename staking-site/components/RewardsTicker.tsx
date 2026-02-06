@@ -3,18 +3,16 @@
 import { useEffect, useState, useRef } from "react";
 
 export interface RewardsTickerProps {
-  // Pool state (kept for potential future use)
-  accRewardPerShare: bigint;
+  // Pool state
   totalStaked: bigint;
-  lastRewardTime: bigint;
   // Staker state
   stakedAmount: bigint;
-  rewardDebt: bigint;
-  pendingRewards: bigint;
   // Whether this staker is in the current epoch (false = stale, rewards frozen)
   isCurrentEpoch: boolean;
   // Pending reward from contract view (simulate_acc_reward projected to current time)
   contractPendingReward: bigint;
+  // Global reward rate from contract (stroops/sec) — 0 if not yet fetched
+  rewardRate: bigint;
   // Sync callback - called periodically to refresh from contract
   onSync?: () => Promise<void>;
   // Sync interval in ms (default 30s)
@@ -29,76 +27,33 @@ function formatLmnr(stroops: bigint): string {
   return `${whole.toLocaleString()}.${displayFrac}`;
 }
 
-const STORAGE_KEY = "lmnr-user-rate-v3";
-
-function loadCachedRate(): bigint {
-  if (typeof window === "undefined") return 0n;
-  try {
-    const cached = localStorage.getItem(STORAGE_KEY);
-    return cached ? BigInt(cached) : 0n;
-  } catch {
-    return 0n;
-  }
-}
-
-function saveCachedRate(rate: bigint) {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(STORAGE_KEY, rate.toString());
-  } catch {
-    // Ignore storage errors
-  }
-}
-
 export function RewardsTicker({
+  totalStaked,
   stakedAmount,
   isCurrentEpoch,
   contractPendingReward,
+  rewardRate,
   onSync,
   syncInterval = 30_000,
 }: RewardsTickerProps) {
   const [displayReward, setDisplayReward] = useState<bigint>(contractPendingReward);
   const [isSyncing, setIsSyncing] = useState(false);
-  // Per-user reward rate in stroops/sec (derived from contractPendingReward deltas)
-  const [userRate, setUserRate] = useState<bigint>(loadCachedRate);
   const lastSyncRef = useRef<number>(Date.now());
-
-  // Track previous contractPendingReward to derive per-user rate
-  const prevPendingRef = useRef<{ value: bigint; time: number } | null>(null);
-  // Timestamp of last sync for extrapolation
   const lastSyncTimeRef = useRef<number>(Date.now() / 1000);
 
-  // Derive per-user reward rate from contractPendingReward deltas between syncs
+  // Compute exact per-user rate from contract values
+  // userRate = globalRate * stakedAmount / totalStaked
+  const userRate =
+    rewardRate > 0n && totalStaked > 0n && stakedAmount > 0n
+      ? (rewardRate * stakedAmount) / totalStaked
+      : 0n;
+
+  const canSimulate = userRate > 0n && isCurrentEpoch;
+
+  // Record sync time when contractPendingReward changes
   useEffect(() => {
-    if (!isCurrentEpoch || contractPendingReward <= 0n) {
-      prevPendingRef.current = null;
-      return;
-    }
-
-    const now = Date.now() / 1000;
-    lastSyncTimeRef.current = now;
-
-    const prev = prevPendingRef.current;
-    if (prev && contractPendingReward > prev.value) {
-      const deltaReward = contractPendingReward - prev.value;
-      const deltaTime = now - prev.time;
-
-      if (deltaTime > 5) {
-        const rate = deltaReward / BigInt(Math.round(deltaTime));
-        if (rate > 0n) {
-          setUserRate(rate);
-          saveCachedRate(rate);
-          console.log(
-            `[RewardsTicker] Derived user rate: ${rate} stroops/sec (${(Number(rate) * 86400 / 1e7).toFixed(2)} LMNR/day)`
-          );
-        }
-      }
-    }
-
-    prevPendingRef.current = { value: contractPendingReward, time: now };
-  }, [contractPendingReward, isCurrentEpoch]);
-
-  const canSimulate = userRate > 0n && stakedAmount > 0n && isCurrentEpoch;
+    lastSyncTimeRef.current = Date.now() / 1000;
+  }, [contractPendingReward]);
 
   // Update display every second
   useEffect(() => {
