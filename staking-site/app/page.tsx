@@ -1,3 +1,4 @@
+import Image from "next/image";
 import { ConnectWallet } from "@/components/ConnectWallet";
 import { StakingDashboard } from "@/components/StakingDashboard";
 
@@ -5,9 +6,16 @@ export default function Home() {
   return (
     <main className="mx-auto max-w-3xl px-4 py-8">
       {/* Header */}
-      <div className="mb-8 flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-white">LMNR Staking</h1>
+      <div className="mb-8 flex flex-col items-center gap-4 sm:flex-row sm:justify-between">
+        <div className="flex flex-col items-center sm:items-start">
+          <Image
+            src="/lumenaire-logo.webp"
+            alt="Lumenaire"
+            width={240}
+            height={80}
+            className="drop-shadow-[0_0_12px_rgba(0,220,180,0.3)]"
+            priority
+          />
           <p className="mt-1 text-sm text-gray-400">
             Stake your SDEX LP positions and earn LMNR rewards
           </p>
