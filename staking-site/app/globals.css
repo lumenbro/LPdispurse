@@ -14,7 +14,7 @@ body::before {
   inset: 0;
   z-index: -2;
   background: url("/bg-lmnr.jpg") center top / cover no-repeat;
-  opacity: 0.25;
+  opacity: 0.45;
 }
 
 body::after {
@@ -24,9 +24,9 @@ body::after {
   z-index: -1;
   background: linear-gradient(
     to bottom,
-    rgba(5, 10, 20, 0.3) 0%,
-    rgba(5, 10, 20, 0.6) 60%,
-    rgba(5, 10, 20, 0.8) 100%
+    rgba(5, 10, 20, 0.1) 0%,
+    rgba(5, 10, 20, 0.4) 50%,
+    rgba(5, 10, 20, 0.7) 100%
   );
 }
 
