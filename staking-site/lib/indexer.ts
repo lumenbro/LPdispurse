@@ -4,7 +4,7 @@
  */
 
 import { Horizon } from "@stellar/stellar-sdk";
-import { put } from "@vercel/blob";
+import { put, list } from "@vercel/blob";
 import { HORIZON_URL } from "./constants";
 import { createAdminClient } from "./contract";
 import { buildMerkleTree, computeLeaf } from "./merkle";
@@ -119,6 +119,80 @@ export async function processPool(snapshot: PoolSnapshot): Promise<{
   );
 
   await adminClient.rawSetMerkleRoot(poolIndex, tree.root, ledger);
+
+  // Reconcile staker balances: update any stakers whose LP balance changed
+  // Build a map of current holder balances
+  const currentBalances = new Map<string, bigint>();
+  for (const h of holders) {
+    currentBalances.set(h.address, h.balance);
+  }
+
+  // Find previously staked addresses from the previous epoch's manifest
+  const prevEpochId = nextEpochId - 1n;
+  if (prevEpochId >= 1n) {
+    try {
+      const { blobs } = await list({
+        prefix: `manifests/${poolIndex}/epoch-${prevEpochId}.json`,
+      });
+      if (blobs.length > 0) {
+        const manifestResp = await fetch(blobs[0].url);
+        const prevManifest = (await manifestResp.json()) as {
+          holders: { address: string; balance: string }[];
+        };
+
+        for (const prev of prevManifest.holders) {
+          const currentBal = currentBalances.get(prev.address);
+          const prevBal = BigInt(prev.balance);
+
+          if (currentBal === undefined) {
+            // Staker withdrew all LP — set stake to 0
+            console.log(
+              `Pool ${poolIndex}: reconciling ${prev.address}: ${prevBal} -> 0 (removed)`
+            );
+            await adminClient.rawUpdateStake(poolIndex, prev.address, 0n);
+          } else if (currentBal !== prevBal) {
+            // Balance changed — update stake
+            console.log(
+              `Pool ${poolIndex}: reconciling ${prev.address}: ${prevBal} -> ${currentBal}`
+            );
+            await adminClient.rawUpdateStake(
+              poolIndex,
+              prev.address,
+              currentBal
+            );
+          } else {
+            // Balance unchanged — still advance epoch so rewards keep accruing
+            console.log(
+              `Pool ${poolIndex}: advancing epoch for ${prev.address} (balance unchanged: ${prevBal})`
+            );
+            await adminClient.rawUpdateStake(
+              poolIndex,
+              prev.address,
+              prevBal
+            );
+          }
+        }
+
+        // New holders not in previous epoch — create stakes
+        for (const h of holders) {
+          const wasPreviousHolder = prevManifest.holders.some(
+            (p) => p.address === h.address
+          );
+          if (!wasPreviousHolder) {
+            console.log(
+              `Pool ${poolIndex}: reconciling new holder ${h.address}: 0 -> ${h.balance}`
+            );
+            await adminClient.rawUpdateStake(poolIndex, h.address, h.balance);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(
+        `Pool ${poolIndex}: could not load previous manifest for reconciliation:`,
+        e
+      );
+    }
+  }
 
   // Store a manifest for this epoch
   const manifest = {

@@ -82,7 +82,7 @@ impl LpStakingContract {
     }
 
     /// Post a new Merkle root for a pool's LP snapshots.
-    /// Resets total_staked — all users must re-prove to continue earning.
+    /// Post a new Merkle root for the pool. Stakes carry over automatically.
     pub fn set_merkle_root(
         env: Env,
         admin: Address,
@@ -94,10 +94,10 @@ impl LpStakingContract {
         Self::require_valid_pool(&env, pool_index)?;
         storage::extend_instance_ttl(&env);
 
-        // Settle rewards at current accumulator before resetting
+        // Settle rewards at current accumulator, preserve total_staked
         let mut state = rewards::update_pool(&env, pool_index);
         state.prev_acc_reward_per_share = state.acc_reward_per_share;
-        state.total_staked = 0;
+        // NOTE: We no longer reset total_staked - existing stakes carry over
         storage::set_pool_state(&env, pool_index, &state);
 
         // Determine next epoch_id
@@ -146,6 +146,116 @@ impl LpStakingContract {
         Self::require_admin(&env, &admin)?;
         storage::extend_instance_ttl(&env);
         storage::set_admin(&env, &new_admin);
+        Ok(())
+    }
+
+    /// Admin-only: reconcile a staker's balance without requiring a Merkle proof.
+    /// Used by the cron to auto-adjust stakers who changed their LP holdings.
+    pub fn update_stake(
+        env: Env,
+        admin: Address,
+        user: Address,
+        pool_index: u32,
+        new_amount: i128,
+    ) -> Result<(), ContractError> {
+        Self::require_admin(&env, &admin)?;
+        Self::require_valid_pool(&env, pool_index)?;
+        storage::extend_instance_ttl(&env);
+
+        if new_amount < 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        // Update pool accumulator
+        let state = rewards::update_pool(&env, pool_index);
+
+        // Get current epoch_id (needed for new staker records)
+        let current_epoch_id = if storage::has_merkle_root(&env, pool_index) {
+            storage::get_merkle_root(&env, pool_index).epoch_id
+        } else {
+            0
+        };
+
+        if storage::has_staker(&env, &user, pool_index) {
+            let staker = storage::get_staker(&env, &user, pool_index);
+
+            // Check if staker's epoch is current
+            let is_current_epoch = current_epoch_id > 0 && staker.epoch_id == current_epoch_id;
+
+            // Settle pending rewards
+            let pending = if is_current_epoch {
+                rewards::calculate_pending(&state, &staker)
+            } else {
+                rewards::calculate_pending_stale(&state, &staker)
+            };
+
+            let old_amount = staker.staked_amount;
+
+            // Update staker record
+            let new_debt = rewards::compute_reward_debt(new_amount, state.acc_reward_per_share);
+            storage::set_staker(
+                &env,
+                &user,
+                pool_index,
+                &StakerInfo {
+                    staked_amount: new_amount,
+                    reward_debt: new_debt,
+                    pending_rewards: pending,
+                    epoch_id: current_epoch_id,
+                },
+            );
+
+            // Adjust total_staked by the delta
+            let mut updated_state = storage::get_pool_state(&env, pool_index);
+            updated_state.total_staked = updated_state.total_staked - old_amount + new_amount;
+            storage::set_pool_state(&env, pool_index, &updated_state);
+        } else if new_amount > 0 {
+            // Create new staker entry
+            let new_debt = rewards::compute_reward_debt(new_amount, state.acc_reward_per_share);
+            storage::set_staker(
+                &env,
+                &user,
+                pool_index,
+                &StakerInfo {
+                    staked_amount: new_amount,
+                    reward_debt: new_debt,
+                    pending_rewards: 0,
+                    epoch_id: current_epoch_id,
+                },
+            );
+
+            let mut updated_state = storage::get_pool_state(&env, pool_index);
+            updated_state.total_staked += new_amount;
+            storage::set_pool_state(&env, pool_index, &updated_state);
+        }
+        // If new_amount == 0 and staker doesn't exist, no-op
+
+        Ok(())
+    }
+
+    /// Admin-only: withdraw LMNR from the contract.
+    pub fn withdraw(
+        env: Env,
+        admin: Address,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        Self::require_admin(&env, &admin)?;
+        storage::extend_instance_ttl(&env);
+
+        if amount <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        let lmnr_token = storage::get_lmnr_token(&env);
+        let token_client = token::Client::new(&env, &lmnr_token);
+
+        let contract_balance = token_client.balance(&env.current_contract_address());
+        if contract_balance < amount {
+            return Err(ContractError::InsufficientRewardBalance);
+        }
+
+        token_client.transfer(&env.current_contract_address(), &admin, &amount);
+
         Ok(())
     }
 
@@ -198,7 +308,7 @@ impl LpStakingContract {
         let state = rewards::update_pool(&env, pool_index);
 
         // Handle existing staker
-        if storage::has_staker(&env, &user, pool_index) {
+        let old_staked_amount = if storage::has_staker(&env, &user, pool_index) {
             let staker = storage::get_staker(&env, &user, pool_index);
 
             if staker.epoch_id == merkle_data.epoch_id && staker.staked_amount > 0 {
@@ -224,6 +334,8 @@ impl LpStakingContract {
                     epoch_id: merkle_data.epoch_id,
                 },
             );
+
+            staker.staked_amount // Return old amount for total_staked adjustment
         } else {
             let new_debt = rewards::compute_reward_debt(lp_balance, state.acc_reward_per_share);
             storage::set_staker(
@@ -237,11 +349,13 @@ impl LpStakingContract {
                     epoch_id: merkle_data.epoch_id,
                 },
             );
-        }
 
-        // Update pool total
+            0 // No old amount for new stakers
+        };
+
+        // Update pool total: subtract old stake (if re-staking), add new stake
         let mut updated_state = storage::get_pool_state(&env, pool_index);
-        updated_state.total_staked += lp_balance;
+        updated_state.total_staked = updated_state.total_staked - old_staked_amount + lp_balance;
         storage::set_pool_state(&env, pool_index, &updated_state);
 
         Ok(())
@@ -293,6 +407,10 @@ impl LpStakingContract {
                 rewards::compute_reward_debt(staker.staked_amount, state.acc_reward_per_share);
             staker.pending_rewards = 0;
         } else {
+            staker.reward_debt = rewards::compute_reward_debt(
+                staker.staked_amount,
+                state.prev_acc_reward_per_share,
+            );
             staker.pending_rewards = 0;
         }
 
@@ -326,8 +444,8 @@ impl LpStakingContract {
             rewards::calculate_pending_stale(&state, &staker)
         };
 
-        // Remove from pool total if still in current epoch
-        if is_current_epoch && staker.staked_amount > 0 {
+        // Remove from pool total (stakes now carry over, so always subtract)
+        if staker.staked_amount > 0 {
             let mut updated_state = storage::get_pool_state(&env, pool_index);
             updated_state.total_staked -= staker.staked_amount;
             storage::set_pool_state(&env, pool_index, &updated_state);
