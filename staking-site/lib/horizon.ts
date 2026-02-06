@@ -15,6 +15,7 @@ export interface PoolReserveInfo {
   reserveA: string;
   reserveB: string;
   totalShares: string;
+  totalTrustlines: number;
 }
 
 export interface UserPoolBalances {
@@ -46,6 +47,7 @@ export async function fetchPoolInfo(
     reserveA: r[0].amount,
     reserveB: r[1].amount,
     totalShares: pool.total_shares,
+    totalTrustlines: Number(pool.total_trustlines),
   };
 }
 

@@ -322,42 +322,60 @@ export function StakingDashboard() {
 
           <div className="mb-4 grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
             <div>
-              <span className="text-gray-400">Total Staked</span>
+              <span className="text-gray-400">Pool LP Supply</span>
               <p className="font-mono text-gray-200">
                 {formatLp(BigInt(pool.state.total_staked))} LP
               </p>
             </div>
             <div>
-              <span className="text-gray-400">Your Stake</span>
+              <span className="text-gray-400">Your LP</span>
               <p className="font-mono text-gray-200">
                 {pool.stakerInfo
                   ? `${formatLp(BigInt(pool.stakerInfo.staked_amount))} LP`
                   : connected
-                    ? "Not staked"
+                    ? "None detected"
                     : "--"}
               </p>
             </div>
+            {connected && pool.stakerInfo && BigInt(pool.state.total_staked) > 0n && (
+              <div>
+                <span className="text-gray-400">Your Share</span>
+                <p className="font-mono text-gray-200">
+                  {(
+                    Number(BigInt(pool.stakerInfo.staked_amount) * 10000n / BigInt(pool.state.total_staked)) / 100
+                  ).toFixed(2)}%
+                </p>
+              </div>
+            )}
             {pool.poolInfo && (
-              <>
-                <div>
-                  <span className="text-gray-400">
-                    Reserve {pool.poolInfo.assetA.code}
-                  </span>
-                  <p className="font-mono text-gray-200">
-                    {parseFloat(pool.poolInfo.reserveA).toLocaleString()}
-                  </p>
-                </div>
-                <div>
-                  <span className="text-gray-400">
-                    Reserve {pool.poolInfo.assetB.code}
-                  </span>
-                  <p className="font-mono text-gray-200">
-                    {parseFloat(pool.poolInfo.reserveB).toLocaleString()}
-                  </p>
-                </div>
-              </>
+              <div>
+                <span className="text-gray-400">LP Holders</span>
+                <p className="font-mono text-gray-200">
+                  {pool.poolInfo.totalTrustlines ?? "--"}
+                </p>
+              </div>
             )}
           </div>
+          {pool.poolInfo && (
+            <div className="mb-4 grid grid-cols-2 gap-4 text-sm sm:grid-cols-2">
+              <div>
+                <span className="text-gray-400">
+                  Reserve {pool.poolInfo.assetA.code}
+                </span>
+                <p className="font-mono text-gray-200">
+                  {parseFloat(pool.poolInfo.reserveA).toLocaleString()}
+                </p>
+              </div>
+              <div>
+                <span className="text-gray-400">
+                  Reserve {pool.poolInfo.assetB.code}
+                </span>
+                <p className="font-mono text-gray-200">
+                  {parseFloat(pool.poolInfo.reserveB).toLocaleString()}
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Pending rewards ticker */}
           {connected && pool.stakerInfo && (
