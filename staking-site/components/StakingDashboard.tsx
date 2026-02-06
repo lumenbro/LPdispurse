@@ -6,6 +6,14 @@ import { createReadClient, createUserClient } from "@/lib/contract";
 import type { PoolState, StakerInfo, MerkleRootData } from "@/lib/contract";
 import { CONTRACT_ID } from "@/lib/constants";
 import { RewardsTicker } from "./RewardsTicker";
+import { AddLiquidityPanel } from "./AddLiquidityPanel";
+import { EpochCountdown } from "./EpochCountdown";
+import {
+  fetchPoolInfo,
+  fetchUserPoolBalances,
+  type PoolReserveInfo,
+  type UserPoolBalances,
+} from "@/lib/horizon";
 
 interface PoolData {
   index: number;
@@ -13,6 +21,8 @@ interface PoolData {
   merkleRoot: MerkleRootData | null;
   stakerInfo: StakerInfo | null;
   pendingReward: bigint;
+  poolId: string | null;
+  poolInfo: PoolReserveInfo | null;
 }
 
 function formatLmnr(stroops: bigint): string {
@@ -35,6 +45,9 @@ export function StakingDashboard() {
   const [loading, setLoading] = useState(true);
   const [txPending, setTxPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [userPoolBalances, setUserPoolBalances] = useState<
+    Record<number, UserPoolBalances>
+  >({});
 
   const fetchData = useCallback(async () => {
     if (!CONTRACT_ID) {
@@ -52,6 +65,8 @@ export function StakingDashboard() {
       setRewardBalance(BigInt(balTx.result));
 
       const poolData: PoolData[] = [];
+      const balancesMap: Record<number, UserPoolBalances> = {};
+
       for (let i = 0; i < poolCount; i++) {
         const stateTx = await client.get_pool_state({ pool_index: i });
         const state = stateTx.result;
@@ -62,6 +77,17 @@ export function StakingDashboard() {
           merkleRoot = rootTx.result;
         } catch {
           // No merkle root yet
+        }
+
+        // Fetch pool ID from contract
+        let poolId: string | null = null;
+        let poolInfo: PoolReserveInfo | null = null;
+        try {
+          const idTx = await client.get_pool_id({ pool_index: i });
+          poolId = Buffer.from(idTx.result).toString("hex");
+          poolInfo = await fetchPoolInfo(poolId);
+        } catch {
+          // Pool ID not found or Horizon error
         }
 
         let stakerInfo: StakerInfo | null = null;
@@ -86,6 +112,20 @@ export function StakingDashboard() {
           } catch {
             // No pending
           }
+
+          // Fetch user's asset balances for this pool
+          if (poolId && poolInfo) {
+            try {
+              balancesMap[i] = await fetchUserPoolBalances(
+                publicKey,
+                poolId,
+                poolInfo.assetA,
+                poolInfo.assetB
+              );
+            } catch {
+              // Horizon error
+            }
+          }
         }
 
         poolData.push({
@@ -94,10 +134,13 @@ export function StakingDashboard() {
           merkleRoot,
           stakerInfo,
           pendingReward,
+          poolId,
+          poolInfo,
         });
       }
 
       setPools(poolData);
+      setUserPoolBalances(balancesMap);
     } catch (err) {
       console.error("Failed to fetch contract data:", err);
       setError("Failed to load contract data. Check your configuration.");
@@ -250,7 +293,9 @@ export function StakingDashboard() {
         >
           <div className="mb-4 flex items-center justify-between">
             <h3 className="text-lg font-semibold text-white">
-              Pool #{pool.index}
+              {pool.poolInfo
+                ? `${pool.poolInfo.assetA.code} / ${pool.poolInfo.assetB.code}`
+                : `Pool #${pool.index}`}
             </h3>
             {pool.merkleRoot && (
               <span className="rounded-full bg-lmnr-700/30 px-3 py-1 text-xs text-lmnr-200">
@@ -259,7 +304,7 @@ export function StakingDashboard() {
             )}
           </div>
 
-          <div className="mb-4 grid grid-cols-2 gap-4 text-sm">
+          <div className="mb-4 grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
             <div>
               <span className="text-gray-400">Total Staked</span>
               <p className="font-mono text-gray-200">
@@ -276,6 +321,26 @@ export function StakingDashboard() {
                     : "--"}
               </p>
             </div>
+            {pool.poolInfo && (
+              <>
+                <div>
+                  <span className="text-gray-400">
+                    Reserve {pool.poolInfo.assetA.code}
+                  </span>
+                  <p className="font-mono text-gray-200">
+                    {parseFloat(pool.poolInfo.reserveA).toLocaleString()}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-gray-400">
+                    Reserve {pool.poolInfo.assetB.code}
+                  </span>
+                  <p className="font-mono text-gray-200">
+                    {parseFloat(pool.poolInfo.reserveB).toLocaleString()}
+                  </p>
+                </div>
+              </>
+            )}
           </div>
 
           {/* Pending rewards ticker */}
@@ -288,6 +353,10 @@ export function StakingDashboard() {
                 stakedAmount={BigInt(pool.stakerInfo.staked_amount)}
                 rewardDebt={BigInt(pool.stakerInfo.reward_debt)}
                 pendingRewards={BigInt(pool.stakerInfo.pending_rewards)}
+                isCurrentEpoch={
+                  !!pool.merkleRoot &&
+                  BigInt(pool.stakerInfo.epoch_id) === BigInt(pool.merkleRoot.epoch_id)
+                }
                 contractPendingReward={pool.pendingReward}
                 onSync={fetchData}
                 syncInterval={30_000}
@@ -297,47 +366,73 @@ export function StakingDashboard() {
 
           {/* Actions */}
           {connected && (
-            <div className="flex gap-3">
-              {(!pool.stakerInfo ||
-                BigInt(pool.stakerInfo.staked_amount) === 0n ||
-                (pool.merkleRoot &&
-                  BigInt(pool.stakerInfo.epoch_id) !==
-                    BigInt(pool.merkleRoot.epoch_id))) && (
-                <button
-                  onClick={() => handleStake(pool.index)}
-                  disabled={txPending !== null}
-                  className="rounded-lg bg-lmnr-600 px-5 py-2 text-sm font-semibold text-white hover:bg-lmnr-500 disabled:opacity-50 transition"
-                >
-                  {txPending === `stake-${pool.index}`
-                    ? "Staking..."
-                    : "Stake"}
-                </button>
-              )}
-
-              {pool.pendingReward > 0n && (
-                <button
-                  onClick={() => handleClaim(pool.index)}
-                  disabled={txPending !== null}
-                  className="rounded-lg bg-green-700 px-5 py-2 text-sm font-semibold text-white hover:bg-green-600 disabled:opacity-50 transition"
-                >
-                  {txPending === `claim-${pool.index}`
-                    ? "Claiming..."
-                    : "Claim"}
-                </button>
-              )}
-
-              {pool.stakerInfo &&
-                BigInt(pool.stakerInfo.staked_amount) > 0n && (
+            <div className="space-y-3">
+              <div className="flex gap-3">
+                {(!pool.stakerInfo ||
+                  BigInt(pool.stakerInfo.staked_amount) === 0n ||
+                  (pool.merkleRoot &&
+                    BigInt(pool.stakerInfo.epoch_id) !==
+                      BigInt(pool.merkleRoot.epoch_id))) && (
                   <button
-                    onClick={() => handleUnstake(pool.index)}
+                    onClick={() => handleStake(pool.index)}
                     disabled={txPending !== null}
-                    className="rounded-lg border border-gray-600 px-5 py-2 text-sm text-gray-300 hover:bg-gray-800 disabled:opacity-50 transition"
+                    className="rounded-lg bg-lmnr-600 px-5 py-2 text-sm font-semibold text-white hover:bg-lmnr-500 disabled:opacity-50 transition"
                   >
-                    {txPending === `unstake-${pool.index}`
-                      ? "Unstaking..."
-                      : "Unstake"}
+                    {txPending === `stake-${pool.index}`
+                      ? "Staking..."
+                      : "Stake"}
                   </button>
                 )}
+
+                {pool.pendingReward > 0n && (
+                  <button
+                    onClick={() => handleClaim(pool.index)}
+                    disabled={txPending !== null}
+                    className="rounded-lg bg-green-700 px-5 py-2 text-sm font-semibold text-white hover:bg-green-600 disabled:opacity-50 transition"
+                  >
+                    {txPending === `claim-${pool.index}`
+                      ? "Claiming..."
+                      : "Claim"}
+                  </button>
+                )}
+
+                {pool.stakerInfo &&
+                  BigInt(pool.stakerInfo.staked_amount) > 0n && (
+                    <button
+                      onClick={() => handleUnstake(pool.index)}
+                      disabled={txPending !== null}
+                      className="rounded-lg border border-gray-600 px-5 py-2 text-sm text-gray-300 hover:bg-gray-800 disabled:opacity-50 transition"
+                    >
+                      {txPending === `unstake-${pool.index}`
+                        ? "Unstaking..."
+                        : "Unstake"}
+                    </button>
+                  )}
+              </div>
+
+              {/* Epoch countdown: shown when user has LP shares but isn't staked or is stale */}
+              {userPoolBalances[pool.index] &&
+                parseFloat(userPoolBalances[pool.index].lpShares) > 0 &&
+                (!pool.stakerInfo ||
+                  BigInt(pool.stakerInfo.staked_amount) === 0n ||
+                  (pool.merkleRoot &&
+                    BigInt(pool.stakerInfo.epoch_id) !==
+                      BigInt(pool.merkleRoot.epoch_id))) && (
+                  <EpochCountdown />
+                )}
+
+              {/* Add Liquidity panel */}
+              {pool.poolId && pool.poolInfo && (
+                <AddLiquidityPanel
+                  poolId={pool.poolId}
+                  poolInfo={pool.poolInfo}
+                  userBalances={userPoolBalances[pool.index] ?? null}
+                  txPending={txPending}
+                  setTxPending={setTxPending}
+                  setError={setError}
+                  onSuccess={fetchData}
+                />
+              )}
             </div>
           )}
 
