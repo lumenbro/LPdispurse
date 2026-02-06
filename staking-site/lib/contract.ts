@@ -131,6 +131,10 @@ export interface StakingClient {
     args: { funder: string; amount: bigint },
     options?: any
   ): Promise<AssembledTransaction<any>>;
+  upgrade(
+    args: { admin: string; new_wasm_hash: Buffer },
+    options?: any
+  ): Promise<AssembledTransaction<any>>;
 }
 
 type SignTransactionFn = (

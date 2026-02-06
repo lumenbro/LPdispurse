@@ -149,6 +149,13 @@ impl LpStakingContract {
         Ok(())
     }
 
+    /// Admin-only: upgrade contract WASM to a new version.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
+        Self::require_admin(&env, &admin)?;
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
     /// Admin-only: reconcile a staker's balance without requiring a Merkle proof.
     /// Used by the cron to auto-adjust stakers who changed their LP holdings.
     pub fn update_stake(

@@ -5,6 +5,15 @@ import { processPool, snapshotPool } from "@/lib/indexer";
 
 export const maxDuration = 60; // Vercel Pro: up to 60s
 
+// Helper to convert BigInts to strings for JSON serialization
+function jsonSafe<T>(obj: T): T {
+  return JSON.parse(
+    JSON.stringify(obj, (_, value) =>
+      typeof value === "bigint" ? value.toString() : value
+    )
+  );
+}
+
 export async function GET(request: Request) {
   // Verify Vercel cron secret or admin wallet
   const authHeader = request.headers.get("authorization");
@@ -50,9 +59,11 @@ export async function GET(request: Request) {
     }
   }
 
-  return NextResponse.json({
-    message: "Indexer complete",
-    ledger: currentLedger,
-    results,
-  });
+  return NextResponse.json(
+    jsonSafe({
+      message: "Indexer complete",
+      ledger: currentLedger,
+      results,
+    })
+  );
 }

@@ -33,11 +33,17 @@ export async function GET(
       );
     }
 
-    // Fetch the proof data
-    const response = await fetch(blobInfo.url);
+    // Fetch the proof data (add cache-busting)
+    const response = await fetch(blobInfo.url + `?t=${Date.now()}`);
     const proofData = await response.json();
 
-    return NextResponse.json(proofData);
+    // Prevent caching - proofs change with each epoch
+    return NextResponse.json(proofData, {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Pragma": "no-cache",
+      },
+    });
   } catch {
     return NextResponse.json(
       { error: "No proof found for this address in this pool" },

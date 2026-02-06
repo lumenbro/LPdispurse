@@ -5,3 +5,28 @@
 body {
   @apply bg-lmnr-950 text-gray-100;
 }
+
+/* Stellar Wallets Kit modal - hide scrollbars globally */
+div[style*="overflow: scroll"],
+div[style*="overflow:scroll"] {
+  overflow: auto !important;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+div[style*="overflow: scroll"]::-webkit-scrollbar,
+div[style*="overflow:scroll"]::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* Target the wallet list container specifically */
+section[class*="#"] div[style*="overflow"] {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+section[class*="#"] div[style*="overflow"]::-webkit-scrollbar {
+  display: none !important;
+}

@@ -753,3 +753,281 @@ fn test_set_admin_non_admin_fails() {
     let result = client.try_set_admin(&rando, &new_admin);
     assert!(result.is_err());
 }
+
+// ========== update_stake tests ==========
+
+#[test]
+fn test_update_stake_increase() {
+    let t = setup_env();
+    let client = LpStakingContractClient::new(&t.env, &t.contract_id);
+    let pool_id = make_pool_id(&t.env, 1);
+    client.add_pool(&t.admin, &pool_id);
+
+    let user = Address::generate(&t.env);
+    let lp_balance: i128 = 10_000_0000000;
+    let epoch_id: u64 = 1;
+
+    // Stake via merkle proof first
+    let leaf = merkle::compute_leaf(&t.env, 0, &user, lp_balance, epoch_id);
+    let (root, proofs) = build_merkle_tree(&t.env, &[leaf]);
+    client.set_merkle_root(&t.admin, &0, &root, &100);
+    client.stake(&user, &0, &lp_balance, &proofs.get(0).unwrap());
+
+    // Advance time so rewards accrue
+    t.env.ledger().set(LedgerInfo {
+        timestamp: 2000,
+        protocol_version: 22,
+        sequence_number: 200,
+        network_id: [0u8; 32],
+        base_reserve: 10,
+        min_temp_entry_ttl: 100,
+        min_persistent_entry_ttl: 100,
+        max_entry_ttl: 10_000_000,
+    });
+
+    let pending_before = client.pending_reward(&user, &0);
+    assert!(pending_before > 0);
+
+    // Admin increases stake
+    let new_amount: i128 = 20_000_0000000;
+    client.update_stake(&t.admin, &user, &0, &new_amount);
+
+    let staker = client.get_staker_info(&user, &0);
+    assert_eq!(staker.staked_amount, new_amount);
+    // Pending rewards should be preserved
+    assert_eq!(staker.pending_rewards, pending_before);
+
+    let state = client.get_pool_state(&0);
+    assert_eq!(state.total_staked, new_amount);
+}
+
+#[test]
+fn test_update_stake_decrease() {
+    let t = setup_env();
+    let client = LpStakingContractClient::new(&t.env, &t.contract_id);
+    let pool_id = make_pool_id(&t.env, 1);
+    client.add_pool(&t.admin, &pool_id);
+
+    let user = Address::generate(&t.env);
+    let lp_balance: i128 = 10_000_0000000;
+    let epoch_id: u64 = 1;
+
+    let leaf = merkle::compute_leaf(&t.env, 0, &user, lp_balance, epoch_id);
+    let (root, proofs) = build_merkle_tree(&t.env, &[leaf]);
+    client.set_merkle_root(&t.admin, &0, &root, &100);
+    client.stake(&user, &0, &lp_balance, &proofs.get(0).unwrap());
+
+    // Advance time
+    t.env.ledger().set(LedgerInfo {
+        timestamp: 2000,
+        protocol_version: 22,
+        sequence_number: 200,
+        network_id: [0u8; 32],
+        base_reserve: 10,
+        min_temp_entry_ttl: 100,
+        min_persistent_entry_ttl: 100,
+        max_entry_ttl: 10_000_000,
+    });
+
+    let pending_before = client.pending_reward(&user, &0);
+
+    // Admin decreases stake
+    let new_amount: i128 = 5_000_0000000;
+    client.update_stake(&t.admin, &user, &0, &new_amount);
+
+    let staker = client.get_staker_info(&user, &0);
+    assert_eq!(staker.staked_amount, new_amount);
+    assert_eq!(staker.pending_rewards, pending_before);
+
+    let state = client.get_pool_state(&0);
+    assert_eq!(state.total_staked, new_amount);
+}
+
+#[test]
+fn test_update_stake_to_zero() {
+    let t = setup_env();
+    let client = LpStakingContractClient::new(&t.env, &t.contract_id);
+    let pool_id = make_pool_id(&t.env, 1);
+    client.add_pool(&t.admin, &pool_id);
+
+    let user = Address::generate(&t.env);
+    let lp_balance: i128 = 10_000_0000000;
+    let epoch_id: u64 = 1;
+
+    let leaf = merkle::compute_leaf(&t.env, 0, &user, lp_balance, epoch_id);
+    let (root, proofs) = build_merkle_tree(&t.env, &[leaf]);
+    client.set_merkle_root(&t.admin, &0, &root, &100);
+    client.stake(&user, &0, &lp_balance, &proofs.get(0).unwrap());
+
+    // Advance time
+    t.env.ledger().set(LedgerInfo {
+        timestamp: 2000,
+        protocol_version: 22,
+        sequence_number: 200,
+        network_id: [0u8; 32],
+        base_reserve: 10,
+        min_temp_entry_ttl: 100,
+        min_persistent_entry_ttl: 100,
+        max_entry_ttl: 10_000_000,
+    });
+
+    let pending_before = client.pending_reward(&user, &0);
+    assert!(pending_before > 0);
+
+    // Admin sets stake to zero (kicks staker)
+    client.update_stake(&t.admin, &user, &0, &0);
+
+    let staker = client.get_staker_info(&user, &0);
+    assert_eq!(staker.staked_amount, 0);
+    // Pending rewards preserved for claiming
+    assert_eq!(staker.pending_rewards, pending_before);
+
+    let state = client.get_pool_state(&0);
+    assert_eq!(state.total_staked, 0);
+
+    // User can still claim
+    let claimed = client.claim(&user, &0);
+    assert_eq!(claimed, pending_before);
+}
+
+#[test]
+fn test_update_stake_new_user() {
+    let t = setup_env();
+    let client = LpStakingContractClient::new(&t.env, &t.contract_id);
+    let pool_id = make_pool_id(&t.env, 1);
+    client.add_pool(&t.admin, &pool_id);
+
+    // Post merkle root so there's a current epoch
+    let dummy_user = Address::generate(&t.env);
+    let leaf = merkle::compute_leaf(&t.env, 0, &dummy_user, 1_000_0000000, 1);
+    let (root, _) = build_merkle_tree(&t.env, &[leaf]);
+    client.set_merkle_root(&t.admin, &0, &root, &100);
+
+    // Admin creates stake for a user who never staked via proof
+    let new_user = Address::generate(&t.env);
+    let amount: i128 = 5_000_0000000;
+    client.update_stake(&t.admin, &new_user, &0, &amount);
+
+    let staker = client.get_staker_info(&new_user, &0);
+    assert_eq!(staker.staked_amount, amount);
+    assert_eq!(staker.epoch_id, 1);
+    assert_eq!(staker.pending_rewards, 0);
+
+    let state = client.get_pool_state(&0);
+    assert_eq!(state.total_staked, amount);
+}
+
+#[test]
+fn test_update_stake_non_admin_fails() {
+    let t = setup_env();
+    let client = LpStakingContractClient::new(&t.env, &t.contract_id);
+    let pool_id = make_pool_id(&t.env, 1);
+    client.add_pool(&t.admin, &pool_id);
+
+    let rando = Address::generate(&t.env);
+    let user = Address::generate(&t.env);
+    let result = client.try_update_stake(&rando, &user, &0, &1_000_0000000);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_update_stake_stale_staker() {
+    let t = setup_env();
+    let client = LpStakingContractClient::new(&t.env, &t.contract_id);
+    let pool_id = make_pool_id(&t.env, 1);
+    client.add_pool(&t.admin, &pool_id);
+
+    let user = Address::generate(&t.env);
+    let lp_balance: i128 = 10_000_0000000;
+
+    // Epoch 1: stake
+    let leaf1 = merkle::compute_leaf(&t.env, 0, &user, lp_balance, 1);
+    let (root1, proofs1) = build_merkle_tree(&t.env, &[leaf1]);
+    client.set_merkle_root(&t.admin, &0, &root1, &100);
+    client.stake(&user, &0, &lp_balance, &proofs1.get(0).unwrap());
+
+    // Advance time by 1000 seconds
+    t.env.ledger().set(LedgerInfo {
+        timestamp: 2000,
+        protocol_version: 22,
+        sequence_number: 200,
+        network_id: [0u8; 32],
+        base_reserve: 10,
+        min_temp_entry_ttl: 100,
+        min_persistent_entry_ttl: 100,
+        max_entry_ttl: 10_000_000,
+    });
+
+    // Post epoch 2 (user is now stale)
+    let other = Address::generate(&t.env);
+    let leaf2 = merkle::compute_leaf(&t.env, 0, &other, lp_balance, 2);
+    let (root2, _) = build_merkle_tree(&t.env, &[leaf2]);
+    client.set_merkle_root(&t.admin, &0, &root2, &200);
+
+    // Advance more time
+    t.env.ledger().set(LedgerInfo {
+        timestamp: 3000,
+        protocol_version: 22,
+        sequence_number: 300,
+        network_id: [0u8; 32],
+        base_reserve: 10,
+        min_temp_entry_ttl: 100,
+        min_persistent_entry_ttl: 100,
+        max_entry_ttl: 10_000_000,
+    });
+
+    // Stale staker's pending should be epoch 1 rewards only
+    let stale_pending = client.pending_reward(&user, &0);
+    assert_eq!(stale_pending, 462_962_963_000_i128);
+
+    // Admin updates stale staker's balance
+    let new_amount: i128 = 15_000_0000000;
+    client.update_stake(&t.admin, &user, &0, &new_amount);
+
+    let staker = client.get_staker_info(&user, &0);
+    assert_eq!(staker.staked_amount, new_amount);
+    assert_eq!(staker.epoch_id, 2); // Updated to current epoch
+    // Stale rewards should be preserved
+    assert_eq!(staker.pending_rewards, stale_pending);
+}
+
+// ========== withdraw tests ==========
+
+#[test]
+fn test_withdraw_success() {
+    let t = setup_env();
+    let client = LpStakingContractClient::new(&t.env, &t.contract_id);
+
+    let initial_balance = client.reward_balance();
+    assert_eq!(initial_balance, 50_000_0000000_i128);
+
+    let withdraw_amount = 10_000_0000000_i128;
+    client.withdraw(&t.admin, &withdraw_amount);
+
+    assert_eq!(client.reward_balance(), 40_000_0000000_i128);
+
+    // Admin's LMNR balance should have increased
+    let token_client = token::Client::new(&t.env, &t.lmnr_token);
+    let admin_balance = token_client.balance(&t.admin);
+    // Admin started with 100k, funded 50k to contract, got 10k back = 60k
+    assert_eq!(admin_balance, 60_000_0000000_i128);
+}
+
+#[test]
+fn test_withdraw_non_admin_fails() {
+    let t = setup_env();
+    let client = LpStakingContractClient::new(&t.env, &t.contract_id);
+
+    let rando = Address::generate(&t.env);
+    let result = client.try_withdraw(&rando, &10_000_0000000_i128);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_withdraw_exceeds_balance_fails() {
+    let t = setup_env();
+    let client = LpStakingContractClient::new(&t.env, &t.contract_id);
+
+    let result = client.try_withdraw(&t.admin, &100_000_0000000_i128);
+    assert!(result.is_err());
+}

@@ -40,7 +40,11 @@ export function AdminDashboard() {
   const [newPoolId, setNewPoolId] = useState("");
   const [newRate, setNewRate] = useState("");
   const [fundAmount, setFundAmount] = useState("");
+  const [withdrawAmount, setWithdrawAmount] = useState("");
   const [removePoolIndex, setRemovePoolIndex] = useState("");
+  const [updateStakeUser, setUpdateStakeUser] = useState("");
+  const [updateStakePool, setUpdateStakePool] = useState("");
+  const [updateStakeAmount, setUpdateStakeAmount] = useState("");
   const [newAdminAddr, setNewAdminAddr] = useState("");
   const [confirmTransfer, setConfirmTransfer] = useState(false);
 
@@ -242,6 +246,85 @@ export function AdminDashboard() {
     } catch (err: any) {
       console.error("[Admin] fund FAILED:", err);
       setError(`Fund failed: ${err?.message || JSON.stringify(err)}`);
+    } finally {
+      setTxPending(null);
+    }
+  };
+
+  const handleWithdraw = async () => {
+    if (!publicKey || !signTransaction) return;
+    clearMessages();
+
+    const lmnr = parseFloat(withdrawAmount);
+    if (isNaN(lmnr) || lmnr <= 0) {
+      setError("Enter a valid LMNR amount.");
+      return;
+    }
+
+    const stroops = BigInt(Math.round(lmnr * 1e7));
+
+    setTxPending("withdraw");
+    try {
+      const client = createUserClient(publicKey, signTransaction);
+      const tx = await client.withdraw({
+        admin: publicKey,
+        amount: stroops,
+      });
+      await tx.signAndSend();
+      setSuccess(`Withdrew ${lmnr} LMNR from the contract.`);
+      setWithdrawAmount("");
+      await fetchData();
+    } catch (err: any) {
+      console.error("[Admin] withdraw FAILED:", err);
+      setError(`Withdraw failed: ${err?.message || JSON.stringify(err)}`);
+    } finally {
+      setTxPending(null);
+    }
+  };
+
+  const handleUpdateStake = async () => {
+    if (!publicKey || !signTransaction) return;
+    clearMessages();
+
+    const addr = updateStakeUser.trim();
+    if (!addr || addr.length !== 56 || !addr.startsWith("G")) {
+      setError("Enter a valid Stellar public key (G...).");
+      return;
+    }
+
+    const poolIdx = parseInt(updateStakePool, 10);
+    if (isNaN(poolIdx) || poolIdx < 0) {
+      setError("Enter a valid pool index.");
+      return;
+    }
+
+    const lp = parseFloat(updateStakeAmount);
+    if (isNaN(lp) || lp < 0) {
+      setError("Enter a valid LP amount (0 or greater).");
+      return;
+    }
+
+    const stroops = BigInt(Math.round(lp * 1e7));
+
+    setTxPending("update-stake");
+    try {
+      const client = createUserClient(publicKey, signTransaction);
+      const tx = await client.update_stake({
+        admin: publicKey,
+        user: addr,
+        pool_index: poolIdx,
+        new_amount: stroops,
+      });
+      await tx.signAndSend();
+      setSuccess(
+        `Updated stake for ${addr.slice(0, 8)}...${addr.slice(-4)} to ${lp} LP in pool #${poolIdx}.`
+      );
+      setUpdateStakeUser("");
+      setUpdateStakeAmount("");
+      await fetchData();
+    } catch (err: any) {
+      console.error("[Admin] update_stake FAILED:", err);
+      setError(`Update stake failed: ${err?.message || JSON.stringify(err)}`);
     } finally {
       setTxPending(null);
     }
@@ -559,7 +642,90 @@ export function AdminDashboard() {
             {txPending === "fund" ? "Funding..." : "Fund"}
           </button>
         </section>
+
+        {/* Withdraw */}
+        <section className="rounded-xl border border-lmnr-700/30 bg-lmnr-900/40 p-6">
+          <h2 className="mb-3 text-lg font-semibold text-white">
+            Withdraw LMNR
+          </h2>
+          <p className="mb-3 text-xs text-gray-400">
+            Withdraw LMNR from the contract back to your admin wallet.
+          </p>
+          <div className="mb-3 flex items-center gap-2">
+            <input
+              type="number"
+              value={withdrawAmount}
+              onChange={(e) => setWithdrawAmount(e.target.value)}
+              placeholder="e.g. 5000"
+              min="0"
+              step="any"
+              className="w-full rounded-lg border border-lmnr-700/30 bg-lmnr-900/60 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 focus:border-lmnr-400 focus:outline-none"
+            />
+            <span className="whitespace-nowrap text-sm text-gray-400">
+              LMNR
+            </span>
+          </div>
+          <button
+            onClick={handleWithdraw}
+            disabled={txPending !== null || !withdrawAmount}
+            className="rounded-lg bg-orange-700 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-50 transition"
+          >
+            {txPending === "withdraw" ? "Withdrawing..." : "Withdraw"}
+          </button>
+        </section>
       </div>
+
+      {/* Update Stake */}
+      <section className="rounded-xl border border-lmnr-700/30 bg-lmnr-900/40 p-6">
+        <h2 className="mb-3 text-lg font-semibold text-white">
+          Update Stake
+        </h2>
+        <p className="mb-3 text-xs text-gray-400">
+          Admin-reconcile a staker&apos;s LP balance without a Merkle proof. Set
+          to 0 to remove a staker. Pending rewards are preserved.
+        </p>
+        <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <input
+            type="text"
+            value={updateStakeUser}
+            onChange={(e) => setUpdateStakeUser(e.target.value)}
+            placeholder="G... (staker address)"
+            className="rounded-lg border border-lmnr-700/30 bg-lmnr-900/60 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 focus:border-lmnr-400 focus:outline-none sm:col-span-2"
+          />
+          <input
+            type="number"
+            value={updateStakePool}
+            onChange={(e) => setUpdateStakePool(e.target.value)}
+            placeholder="Pool index"
+            min="0"
+            className="rounded-lg border border-lmnr-700/30 bg-lmnr-900/60 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 focus:border-lmnr-400 focus:outline-none"
+          />
+        </div>
+        <div className="mb-3 flex items-center gap-2">
+          <input
+            type="number"
+            value={updateStakeAmount}
+            onChange={(e) => setUpdateStakeAmount(e.target.value)}
+            placeholder="New LP amount (e.g. 1000)"
+            min="0"
+            step="any"
+            className="w-full rounded-lg border border-lmnr-700/30 bg-lmnr-900/60 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 focus:border-lmnr-400 focus:outline-none"
+          />
+          <span className="whitespace-nowrap text-sm text-gray-400">LP</span>
+        </div>
+        <button
+          onClick={handleUpdateStake}
+          disabled={
+            txPending !== null ||
+            !updateStakeUser.trim() ||
+            updateStakePool === "" ||
+            updateStakeAmount === ""
+          }
+          className="rounded-lg bg-lmnr-600 px-4 py-2 text-sm font-semibold text-white hover:bg-lmnr-500 disabled:opacity-50 transition"
+        >
+          {txPending === "update-stake" ? "Updating..." : "Update Stake"}
+        </button>
+      </section>
 
       {/* Trigger Indexer */}
       <section className="rounded-xl border border-lmnr-700/30 bg-lmnr-900/40 p-6">
