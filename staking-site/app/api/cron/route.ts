@@ -3,7 +3,7 @@ import { Horizon } from "@stellar/stellar-sdk";
 import { getPoolConfig, HORIZON_URL } from "@/lib/constants";
 import { processPool, snapshotPool } from "@/lib/indexer";
 
-export const maxDuration = 60; // Vercel Pro: up to 60s
+export const maxDuration = 300; // Vercel Pro: up to 300s for cron reconciliation
 
 // Helper to convert BigInts to strings for JSON serialization
 function jsonSafe<T>(obj: T): T {
