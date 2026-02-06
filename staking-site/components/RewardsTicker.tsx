@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef, useCallback } from "react";
 
-const PRECISION = 1_000_000_000_000n; // 1e12 - matches contract
+const PRECISION = 1_000_000_000_000_000_000n; // 1e18 - matches contract
 
 interface RewardsTickerProps {
   // Pool state
@@ -13,6 +13,8 @@ interface RewardsTickerProps {
   stakedAmount: bigint;
   rewardDebt: bigint;
   pendingRewards: bigint;
+  // Whether this staker is in the current epoch (false = stale, rewards frozen)
+  isCurrentEpoch: boolean;
   // Initial pending reward from contract (for fallback display)
   contractPendingReward: bigint;
   // Sync callback - called periodically to refresh from contract
@@ -30,7 +32,7 @@ function formatLmnr(stroops: bigint): string {
   return `${whole.toLocaleString()}.${displayFrac}`;
 }
 
-const STORAGE_KEY = "lmnr-reward-rate";
+const STORAGE_KEY = "lmnr-reward-rate-v2"; // v2: fixed derivation formula
 
 // Load cached reward rate from localStorage
 function loadCachedRate(): bigint {
@@ -60,6 +62,7 @@ export function RewardsTicker({
   stakedAmount,
   rewardDebt,
   pendingRewards,
+  isCurrentEpoch,
   contractPendingReward,
   onSync,
   syncInterval = 30_000,
@@ -80,18 +83,32 @@ export function RewardsTicker({
   useEffect(() => {
     const prev = prevStateRef.current;
 
-    if (prev && totalStaked > 0n) {
+    if (prev && prev.totalStaked > 0n && totalStaked > 0n) {
       const deltaAcc = accRewardPerShare - prev.accRewardPerShare;
       const deltaTime = lastRewardTime - prev.lastRewardTime;
 
       // Only calculate if there's been a meaningful change
+      // Use the AVERAGE of prev and current totalStaked for better accuracy
+      // (the accumulator was computed somewhere in between)
       if (deltaAcc > 0n && deltaTime > 0n) {
-        // reward_rate = (deltaAcc * totalStaked) / (deltaTime * PRECISION)
-        const rate = (deltaAcc * totalStaked) / (deltaTime * PRECISION);
-        if (rate > 0n) {
+        // Use previous totalStaked since that's what was active during accumulation
+        // If totalStaked changed dramatically, the average is more accurate
+        const avgTotalStaked = (prev.totalStaked + totalStaked) / 2n;
+
+        // reward_rate = (deltaAcc * avgTotalStaked) / (deltaTime * PRECISION)
+        const rate = (deltaAcc * avgTotalStaked) / (deltaTime * PRECISION);
+
+        // Sanity check: rate should be reasonable (< 1 LMNR/sec = 10^7 stroops/sec)
+        // and (> 0.0001 LMNR/sec = 1000 stroops/sec for most pools)
+        const MAX_REASONABLE_RATE = 10_000_000n; // 1 LMNR/sec
+        const MIN_REASONABLE_RATE = 100n; // 0.00001 LMNR/sec
+
+        if (rate > MIN_REASONABLE_RATE && rate < MAX_REASONABLE_RATE) {
           setDerivedRewardRate(rate);
           saveCachedRate(rate);
           console.log(`[RewardsTicker] Derived reward rate: ${rate} stroops/sec (${Number(rate) * 86400 / 1e7} LMNR/day)`);
+        } else {
+          console.log(`[RewardsTicker] Derived rate ${rate} outside reasonable bounds, ignoring (deltaAcc=${deltaAcc}, deltaTime=${deltaTime}, avgStaked=${avgTotalStaked})`);
         }
       }
     }
@@ -104,8 +121,9 @@ export function RewardsTicker({
     };
   }, [accRewardPerShare, lastRewardTime, totalStaked]);
 
-  // Can we do real-time simulation? Need derived rate and total staked
-  const canSimulate = derivedRewardRate > 0n && totalStaked > 0n && stakedAmount > 0n;
+  // Can we do real-time simulation? Need derived rate, total staked, and current epoch
+  // Stale stakers have frozen rewards (using prev_acc_reward_per_share) so simulation is wrong
+  const canSimulate = derivedRewardRate > 0n && totalStaked > 0n && stakedAmount > 0n && isCurrentEpoch;
 
   // Calculate pending reward at a given timestamp
   const calculateReward = useCallback(
