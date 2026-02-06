@@ -5,7 +5,13 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "LMNR LP Staking",
   description: "Stake your SDEX LP positions and earn LMNR rewards",
-  icons: { icon: "/favicon.svg" },
+  icons: {
+    icon: [
+      { url: "/favicon-32.png", sizes: "32x32", type: "image/png" },
+      { url: "/favicon.png", sizes: "192x192", type: "image/png" },
+    ],
+    apple: "/apple-touch-icon.png",
+  },
 };
 
 export default function RootLayout({
