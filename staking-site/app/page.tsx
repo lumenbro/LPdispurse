@@ -11,8 +11,8 @@ export default function Home() {
           <Image
             src="/lumenaire-logo.webp"
             alt="Lumenaire"
-            width={240}
-            height={80}
+            width={360}
+            height={120}
             className="drop-shadow-[0_0_12px_rgba(0,220,180,0.3)]"
             priority
           />
