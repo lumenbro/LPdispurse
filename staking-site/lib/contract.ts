@@ -1,4 +1,5 @@
 import {
+  Contract,
   Keypair,
   TransactionBuilder,
   Operation,
@@ -9,6 +10,9 @@ import {
 } from "@stellar/stellar-sdk";
 import { Server as RpcServer, Api } from "@stellar/stellar-sdk/rpc";
 import { assembleTransaction } from "@stellar/stellar-sdk/rpc";
+
+// Creit-Tech Stellar Router V0 — batches multiple contract calls into one tx
+const STELLAR_ROUTER_V0 = "CBZV3HBP672BV7FF3ZILVT4CNPW3N5V2WTJ2LAGOAYW5R7L2D5SLUDFZ";
 import {
   AssembledTransaction,
   Client as ContractClient,
@@ -418,6 +422,10 @@ export function createAdminClient(): StakingClient & {
     user: string,
     newAmount: bigint
   ) => Promise<Api.GetSuccessfulTransactionResponse>;
+  rawBatchUpdateStake: (
+    poolIndex: number,
+    entries: { user: string; newAmount: bigint }[]
+  ) => Promise<Api.GetSuccessfulTransactionResponse>;
   rawWithdraw: (
     amount: bigint
   ) => Promise<Api.GetSuccessfulTransactionResponse>;
@@ -526,11 +534,136 @@ export function createAdminClient(): StakingClient & {
     ]);
   };
 
+  /**
+   * Batch multiple update_stake calls into a single transaction via Stellar Router V0.
+   * Each entry is { user, newAmount } for the given poolIndex.
+   */
+  const rawBatchUpdateStake = async (
+    poolIndex: number,
+    entries: { user: string; newAmount: bigint }[]
+  ): Promise<Api.GetSuccessfulTransactionResponse> => {
+    if (entries.length === 0) throw new Error("No entries to batch");
+
+    const router = new Contract(STELLAR_ROUTER_V0);
+    const adminScVal = new Address(keypair.publicKey()).toScVal();
+    const poolScVal = nativeToScVal(poolIndex, { type: "u32" });
+
+    // Build invocation args for the router: Vec<Vec<ScVal>>
+    // Each invocation = [contract_address, method_symbol, args_vec]
+    const invocations = entries.map((entry) =>
+      xdr.ScVal.scvVec([
+        new Address(CONTRACT_ID).toScVal(), // target contract
+        xdr.ScVal.scvSymbol("update_stake"), // method
+        xdr.ScVal.scvVec([
+          adminScVal,
+          new Address(entry.user).toScVal(),
+          poolScVal,
+          nativeToScVal(entry.newAmount, { type: "i128" }),
+        ]),
+      ])
+    );
+
+    // Build the router exec operation
+    const routerOp = router.call(
+      "exec",
+      adminScVal,
+      xdr.ScVal.scvVec(invocations)
+    );
+
+    const server = new RpcServer(RPC_URL);
+    const account = await server.getAccount(keypair.publicKey());
+
+    const tx = new TransactionBuilder(account, {
+      fee: "10000000",
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(routerOp)
+      .setTimeout(120)
+      .build();
+
+    console.log(`[batchUpdateStake] simulating ${entries.length} entries...`);
+    const simResponse = await server.simulateTransaction(tx);
+
+    if (Api.isSimulationError(simResponse)) {
+      console.error("[batchUpdateStake] simulation error:", (simResponse as any).error);
+      throw new Error(`Batch simulation failed: ${(simResponse as any).error}`);
+    }
+
+    const simSuccess = simResponse as Api.SimulateTransactionSuccessResponse;
+
+    // Sign auth entries
+    if (simSuccess.result?.auth?.length) {
+      const latestLedger = (await server.getLatestLedger()).sequence;
+      for (let i = 0; i < simSuccess.result.auth.length; i++) {
+        const entryXdr = simSuccess.result.auth[i];
+        const entry = typeof entryXdr === "string"
+          ? xdr.SorobanAuthorizationEntry.fromXDR(entryXdr, "base64")
+          : entryXdr;
+
+        if (entry.credentials().switch().name === "sorobanCredentialsAddress") {
+          const signed = authorizeEntry(entry, keypair, latestLedger + 200, NETWORK_PASSPHRASE);
+          simSuccess.result.auth[i] = (signed instanceof Promise ? await signed : signed) as any;
+        } else {
+          simSuccess.result.auth[i] = entry as any;
+        }
+      }
+    }
+
+    const assembled = assembleTransaction(tx, simResponse).build();
+    assembled.sign(keypair);
+
+    const signedXdr = assembled.toXDR();
+    console.log(`[batchUpdateStake] submitting...`);
+    const rpcResponse = await fetch(RPC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "sendTransaction",
+        params: { transaction: signedXdr },
+      }),
+    });
+    const rpcJson = await rpcResponse.json();
+    const sendResponse = rpcJson.result as {
+      status: string;
+      hash: string;
+      errorResult?: any;
+    };
+
+    if (sendResponse.status === "ERROR") {
+      throw new Error(`Batch send error: ${JSON.stringify(sendResponse.errorResult)}`);
+    }
+    if (sendResponse.status !== "PENDING") {
+      throw new Error(`Unexpected batch status: ${sendResponse.status}`);
+    }
+
+    const hash = sendResponse.hash;
+    console.log(`[batchUpdateStake] tx hash=${hash}, polling...`);
+    const start = Date.now();
+    let getResponse = await server.getTransaction(hash);
+    while (getResponse.status === "NOT_FOUND") {
+      if (Date.now() - start > 120000) {
+        throw new Error(`Batch transaction timed out. Hash: ${hash}`);
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+      getResponse = await server.getTransaction(hash);
+    }
+
+    if (getResponse.status === "SUCCESS") {
+      console.log(`[batchUpdateStake] success, ${entries.length} stakers reconciled`);
+      return getResponse as Api.GetSuccessfulTransactionResponse;
+    }
+
+    throw new Error(`Batch transaction failed: ${getResponse.status}. Hash: ${hash}`);
+  };
+
   return Object.assign(client, {
     publicKey: keypair.publicKey(),
     signAndSendTx,
     rawSetMerkleRoot,
     rawUpdateStake,
+    rawBatchUpdateStake,
     rawWithdraw,
   });
 }

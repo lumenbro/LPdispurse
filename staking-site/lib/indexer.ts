@@ -120,14 +120,14 @@ export async function processPool(snapshot: PoolSnapshot): Promise<{
 
   await adminClient.rawSetMerkleRoot(poolIndex, tree.root, ledger);
 
-  // Reconcile staker balances: update any stakers whose LP balance changed
-  // Build a map of current holder balances
+  // Reconcile staker balances via batched router call (one batch per pool)
   const currentBalances = new Map<string, bigint>();
   for (const h of holders) {
     currentBalances.set(h.address, h.balance);
   }
 
-  // Find previously staked addresses from the previous epoch's manifest
+  const MAX_BATCH_SIZE = 15; // Stay well within 100M instruction / memory limits
+
   const prevEpochId = nextEpochId - 1n;
   if (prevEpochId >= 1n) {
     try {
@@ -140,50 +140,55 @@ export async function processPool(snapshot: PoolSnapshot): Promise<{
           holders: { address: string; balance: string }[];
         };
 
+        // Collect all reconciliation entries for this pool
+        const batchEntries: { user: string; newAmount: bigint }[] = [];
+
         for (const prev of prevManifest.holders) {
           const currentBal = currentBalances.get(prev.address);
           const prevBal = BigInt(prev.balance);
 
           if (currentBal === undefined) {
-            // Staker withdrew all LP — set stake to 0
-            console.log(
-              `Pool ${poolIndex}: reconciling ${prev.address}: ${prevBal} -> 0 (removed)`
-            );
-            await adminClient.rawUpdateStake(poolIndex, prev.address, 0n);
+            console.log(`Pool ${poolIndex}: ${prev.address}: ${prevBal} -> 0 (removed)`);
+            batchEntries.push({ user: prev.address, newAmount: 0n });
           } else if (currentBal !== prevBal) {
-            // Balance changed — update stake
-            console.log(
-              `Pool ${poolIndex}: reconciling ${prev.address}: ${prevBal} -> ${currentBal}`
-            );
-            await adminClient.rawUpdateStake(
-              poolIndex,
-              prev.address,
-              currentBal
-            );
+            console.log(`Pool ${poolIndex}: ${prev.address}: ${prevBal} -> ${currentBal}`);
+            batchEntries.push({ user: prev.address, newAmount: currentBal });
           } else {
-            // Balance unchanged — still advance epoch so rewards keep accruing
-            console.log(
-              `Pool ${poolIndex}: advancing epoch for ${prev.address} (balance unchanged: ${prevBal})`
-            );
-            await adminClient.rawUpdateStake(
-              poolIndex,
-              prev.address,
-              prevBal
-            );
+            console.log(`Pool ${poolIndex}: ${prev.address}: epoch advance (${prevBal})`);
+            batchEntries.push({ user: prev.address, newAmount: prevBal });
           }
         }
 
-        // New holders not in previous epoch — create stakes
+        // New holders not in previous epoch
         for (const h of holders) {
           const wasPreviousHolder = prevManifest.holders.some(
             (p) => p.address === h.address
           );
           if (!wasPreviousHolder) {
-            console.log(
-              `Pool ${poolIndex}: reconciling new holder ${h.address}: 0 -> ${h.balance}`
-            );
-            await adminClient.rawUpdateStake(poolIndex, h.address, h.balance);
+            console.log(`Pool ${poolIndex}: new holder ${h.address}: 0 -> ${h.balance}`);
+            batchEntries.push({ user: h.address, newAmount: h.balance });
           }
+        }
+
+        // Submit in chunks via Stellar Router
+        if (batchEntries.length > 0) {
+          const chunks: { user: string; newAmount: bigint }[][] = [];
+          for (let i = 0; i < batchEntries.length; i += MAX_BATCH_SIZE) {
+            chunks.push(batchEntries.slice(i, i + MAX_BATCH_SIZE));
+          }
+
+          console.log(
+            `Pool ${poolIndex}: reconciling ${batchEntries.length} stakers in ${chunks.length} batch(es)`
+          );
+
+          for (let c = 0; c < chunks.length; c++) {
+            console.log(
+              `Pool ${poolIndex}: submitting batch ${c + 1}/${chunks.length} (${chunks[c].length} entries)`
+            );
+            await adminClient.rawBatchUpdateStake(poolIndex, chunks[c]);
+          }
+
+          console.log(`Pool ${poolIndex}: all batches complete`);
         }
       }
     } catch (e) {
