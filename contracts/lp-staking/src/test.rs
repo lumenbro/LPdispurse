@@ -754,6 +754,42 @@ fn test_set_admin_non_admin_fails() {
     assert!(result.is_err());
 }
 
+// ========== set_lmnr_token tests (xLMNR migration) ==========
+
+#[test]
+fn test_set_lmnr_token() {
+    let t = setup_env();
+    let client = LpStakingContractClient::new(&t.env, &t.contract_id);
+
+    // setup_env funded the contract with 50_000_0000000 LMNR.
+    assert_eq!(client.reward_balance(), 50_000_0000000_i128);
+
+    // Deploy a fresh "xLMNR" token and mint a different balance to the contract.
+    let xlmnr_admin = Address::generate(&t.env);
+    let xlmnr_token_id = t.env.register_stellar_asset_contract_v2(xlmnr_admin);
+    let xlmnr_token = xlmnr_token_id.address();
+    let xlmnr_sac = token::StellarAssetClient::new(&t.env, &xlmnr_token);
+    xlmnr_sac.mint(&t.contract_id, &7_777_0000000_i128);
+
+    // Swap the reward token pointer.
+    client.set_lmnr_token(&t.admin, &xlmnr_token);
+
+    // reward_balance now reads from the new token, not the old one.
+    assert_eq!(client.reward_balance(), 7_777_0000000_i128);
+}
+
+#[test]
+fn test_set_lmnr_token_non_admin_fails() {
+    let t = setup_env();
+    let client = LpStakingContractClient::new(&t.env, &t.contract_id);
+
+    let rando = Address::generate(&t.env);
+    let fake_token = Address::generate(&t.env);
+
+    let result = client.try_set_lmnr_token(&rando, &fake_token);
+    assert!(result.is_err());
+}
+
 // ========== update_stake tests ==========
 
 #[test]

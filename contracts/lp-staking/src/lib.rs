@@ -149,6 +149,18 @@ impl LpStakingContract {
         Ok(())
     }
 
+    /// Admin-only: swap the reward token (LMNR SAC) to a new address.
+    /// Used for the LMNR → xLMNR migration. Admin should withdraw existing
+    /// reward balance and notify stakers to claim pending rewards before
+    /// calling this — pending rewards denominated in the old token become
+    /// unclaimable once the pointer changes.
+    pub fn set_lmnr_token(env: Env, admin: Address, new_token: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env, &admin)?;
+        storage::extend_instance_ttl(&env);
+        storage::set_lmnr_token(&env, &new_token);
+        Ok(())
+    }
+
     /// Admin-only: upgrade contract WASM to a new version.
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
         Self::require_admin(&env, &admin)?;
