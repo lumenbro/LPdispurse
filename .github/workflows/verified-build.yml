@@ -1,0 +1,29 @@
+name: Verified Build (lp-staking)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_name:
+        description: 'Release name (e.g. v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: write
+  attestations: write
+
+jobs:
+  release-lp-staking:
+    uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@v22.8.1
+    with:
+      release_name: ${{ github.event.inputs.release_name || github.ref_name }}
+      release_description: 'LP Staking — Merkle-proof-gated SDEX LP staking with per-epoch reward accumulator on Stellar Soroban. Includes set_lmnr_token admin entry point for xLMNR migration.'
+      relative_path: 'contracts/lp-staking'
+      package: 'lp-staking'
+      home_domain: 'thelumenaire.com'
+    secrets:
+      release_token: ${{ secrets.GITHUB_TOKEN }}
