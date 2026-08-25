@@ -446,9 +446,15 @@ impl LpStakingContract {
             if state.total_staked < 0 {
                 state.total_staked = 0;
             }
-            state.epoch_staked = state.epoch_staked.saturating_sub(staker.staked_amount);
-            if state.epoch_staked < 0 {
-                state.epoch_staked = 0;
+            // Only release the epoch allowance if this record actually held
+            // one. A stale record was never counted, and subtracting it would
+            // under-count the epoch and reopen the emission multiplier.
+            if staker.epoch_id == Self::current_epoch_id(&env, pool_index) {
+                state.epoch_staked =
+                    state.epoch_staked.saturating_sub(staker.staked_amount);
+                if state.epoch_staked < 0 {
+                    state.epoch_staked = 0;
+                }
             }
             storage::set_pool_state(&env, pool_index, &state);
         }
@@ -627,6 +633,20 @@ impl LpStakingContract {
                 .total_staked
                 .checked_add(new_amount)
                 .ok_or(ContractError::MathOverflow)?;
+
+            // A new record is always written at the CURRENT epoch, so it counts
+            // toward the epoch aggregate and must respect the same cap as a
+            // proof-based stake. Without this an admin reconciliation could push
+            // live stake above total_lp and multiply emissions.
+            let agg = updated
+                .epoch_staked
+                .checked_add(new_amount)
+                .ok_or(ContractError::MathOverflow)?;
+            let cap = rewards::current_total_lp(&env, pool_index);
+            if cap > 0 && agg > cap {
+                return Err(ContractError::EpochStakeExceeded);
+            }
+            updated.epoch_staked = agg;
             storage::set_pool_state(&env, pool_index, &updated);
 
             events::StakeUpdated {
@@ -704,8 +724,13 @@ impl LpStakingContract {
 
         let state = rewards::update_pool(&env, pool_index)?;
 
+        let mut old_was_current = false;
         let old_staked_amount = if storage::has_staker(&env, &user, pool_index) {
             let staker = storage::get_staker(&env, &user, pool_index);
+            // Admin can promote a stale record into the current epoch via
+            // update_stake WITHOUT setting LastProvenEpoch, so a user may still
+            // arrive here holding a record already counted in epoch_staked.
+            old_was_current = staker.epoch_id == merkle_data.epoch_id;
 
             let settle_acc = Self::settlement_acc(&env, pool_index, &state, &staker)?;
             let pending = rewards::calculate_pending(&env, settle_acc, &staker)?;
@@ -752,17 +777,23 @@ impl LpStakingContract {
             return Err(ContractError::MathOverflow);
         }
 
-        // Cap aggregate proven stake for this epoch at total_lp. A staker may
-        // only prove once per epoch (LastProvenEpoch), so this is a pure add.
-        // Without it, a fabricated root naming N addresses at total_lp each
-        // would pay N full emission streams.
-        updated.epoch_staked = updated
-            .epoch_staked
+        // Cap aggregate proven stake for this epoch at total_lp. Release any
+        // amount this record already contributed to the current epoch first,
+        // otherwise an admin-promoted record would be counted twice.
+        let mut agg = updated.epoch_staked;
+        if old_was_current {
+            agg = agg.saturating_sub(old_staked_amount);
+            if agg < 0 {
+                agg = 0;
+            }
+        }
+        agg = agg
             .checked_add(lp_balance)
             .ok_or(ContractError::MathOverflow)?;
-        if updated.epoch_staked > merkle_data.total_lp {
+        if agg > merkle_data.total_lp {
             return Err(ContractError::EpochStakeExceeded);
         }
+        updated.epoch_staked = agg;
         storage::set_pool_state(&env, pool_index, &updated);
         storage::set_last_proven_epoch(&env, &user, pool_index, merkle_data.epoch_id);
 

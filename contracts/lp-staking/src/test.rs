@@ -1674,3 +1674,117 @@ fn test_unstake_releases_epoch_allowance() {
     c.unstake(&u1, &0);
     assert_eq!(c.get_epoch_staked(&0), half, "allowance not released on unstake");
 }
+
+// ============ epoch_staked accounting holes (round-6 blockers) ============
+
+/// Hole 1: admin-created records went through a branch that never touched
+/// epoch_staked, so admin reconciliation could push live stake above total_lp.
+#[test]
+fn test_admin_created_records_respect_epoch_cap() {
+    let t = setup_env();
+    let c = t.client();
+    let pool_id = make_pool_id(&t.env, 1);
+    c.add_pool(&t.admin, &pool_id, &RATE);
+
+    let total_lp = 10_000 * MIN_STAKE;
+    let root = make_pool_id(&t.env, 9);
+    c.set_merkle_root(&t.poster, &0, &root, &100, &total_lp);
+
+    let a = Address::generate(&t.env);
+    let b = Address::generate(&t.env);
+
+    c.update_stake(&t.admin, &a, &0, &total_lp);
+    assert_eq!(c.get_epoch_staked(&0), total_lp);
+
+    // A second admin-created record would exceed the denominator.
+    assert!(
+        c.try_update_stake(&t.admin, &b, &0, &total_lp).is_err(),
+        "admin-created record bypassed the epoch cap"
+    );
+    assert!(c.get_epoch_staked(&0) <= total_lp);
+}
+
+/// Hole 2: force-clearing a STALE record subtracted from the current epoch's
+/// aggregate, freeing phantom capacity for a Sybil identity.
+#[test]
+fn test_force_clear_stale_does_not_free_current_epoch_capacity() {
+    let t = setup_env();
+    let c = t.client();
+    t.fund_contract(1_000_000_000_000_000);
+    let pool_id = make_pool_id(&t.env, 1);
+    c.add_pool(&t.admin, &pool_id, &RATE);
+
+    let total_lp = 10_000 * MIN_STAKE;
+    let half = total_lp / 2;
+    let stale_user = Address::generate(&t.env);
+    let cur_user = Address::generate(&t.env);
+    let attacker = Address::generate(&t.env);
+
+    // Epoch 1: stale_user proves half.
+    let l1 = t.leaf(0, &pool_id, &stale_user, half, 1);
+    let (r1, p1) = build_tree(&t, &[l1]);
+    c.set_merkle_root(&t.poster, &0, &r1, &100, &total_lp);
+    c.stake(&stale_user, &0, &half, &p1[0]);
+
+    // Epoch 2: cur_user proves half. stale_user is now stale.
+    t.advance_to(1000 + crate::MIN_ROOT_INTERVAL + 1);
+    let l2 = t.leaf(0, &pool_id, &cur_user, half, 2);
+    let l2b = t.leaf(0, &pool_id, &attacker, total_lp, 2);
+    let (r2, p2) = build_tree(&t, &[l2, l2b]);
+    c.set_merkle_root(&t.poster, &0, &r2, &101, &total_lp);
+    c.stake(&cur_user, &0, &half, &p2[0]);
+    assert_eq!(c.get_epoch_staked(&0), half);
+
+    // Force-clearing the STALE record must not release current-epoch capacity.
+    c.admin_force_clear_stake(&t.admin, &stale_user, &0);
+    assert_eq!(
+        c.get_epoch_staked(&0),
+        half,
+        "clearing a stale record wrongly freed current-epoch capacity"
+    );
+
+    // So the attacker still cannot claim the whole denominator.
+    assert!(c.try_stake(&attacker, &0, &total_lp, &p2[1]).is_err());
+}
+
+/// Hole 3: admin promoting a stale record into the current epoch does NOT set
+/// LastProvenEpoch, so the user could still call stake() -- which added again
+/// without releasing the amount already counted.
+#[test]
+fn test_admin_promotion_then_proof_does_not_double_count() {
+    let t = setup_env();
+    let c = t.client();
+    t.fund_contract(1_000_000_000_000_000);
+    let pool_id = make_pool_id(&t.env, 1);
+    c.add_pool(&t.admin, &pool_id, &RATE);
+
+    let total_lp = 10_000 * MIN_STAKE;
+    let u = Address::generate(&t.env);
+    let amount = total_lp / 2;
+
+    // Epoch 1 stake.
+    let l1 = t.leaf(0, &pool_id, &u, amount, 1);
+    let (r1, p1) = build_tree(&t, &[l1]);
+    c.set_merkle_root(&t.poster, &0, &r1, &100, &total_lp);
+    c.stake(&u, &0, &amount, &p1[0]);
+
+    // Epoch 2 begins; the user is stale.
+    t.advance_to(1000 + crate::MIN_ROOT_INTERVAL + 1);
+    let l2 = t.leaf(0, &pool_id, &u, amount, 2);
+    let (r2, p2) = build_tree(&t, &[l2]);
+    c.set_merkle_root(&t.poster, &0, &r2, &101, &total_lp);
+    assert_eq!(c.get_epoch_staked(&0), 0);
+
+    // Admin promotes the record into epoch 2 -> counted once.
+    c.update_stake(&t.admin, &u, &0, &amount);
+    assert_eq!(c.get_epoch_staked(&0), amount);
+
+    // The user then submits their legitimate epoch-2 proof. It must REPLACE,
+    // not add on top.
+    c.stake(&u, &0, &amount, &p2[0]);
+    assert_eq!(
+        c.get_epoch_staked(&0),
+        amount,
+        "admin promotion + user proof double-counted the same position"
+    );
+}
