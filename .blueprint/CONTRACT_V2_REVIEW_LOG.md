@@ -106,3 +106,48 @@ Full checklist is in the round-3 Codex output.
    admin key in Vercel — operator key only).
 5. Deploy with constructor args, re-add 3 pools, move the 10,990 xLMNR from v1, run the
    stellar-expert verified-build workflow (bump it off `v22.8.1`).
+
+## Testnet dry run — PASSED (2026-08-24)
+
+Contract `CBX6CJ2TVE65N7TSPM3TB32M3ANRGFK4UOESJLCGTS5DNQONSTGPBFV7` (testnet).
+Script: `scripts/testnet-dryrun.sh` (repeatable; `FRESH=1` for new keys).
+
+Confirmed ON-CHAIN, not just in unit tests:
+- Leaf format: `stake` accepted with a proof built by the TYPESCRIPT builder →
+  merkle.ts and merkle.rs agree against a real deployed contract.
+- Constructor set admin+operator atomically at deploy.
+- **H-1**: stale pending `5787037037` immediately after the epoch-2 transition and
+  IDENTICAL 45s later. Frozen settlement verified live.
+- **H-R2-1**: operator reconciled a stale record down; `epoch_id` stayed 1.
+- Negative tests all rejected: proof replay, operator withdraw, operator
+  set_pool_rate, operator stake INCREASE.
+- Real accrual + claim (~2314 TLMNR over ~50s at the 4000/day rate).
+
+Setup gotchas found here (would have hit mainnet identically):
+- Classic assets need a TRUSTLINE on every G-account holding them. **The staking
+  UI must check the user has an xLMNR trustline before offering `claim`, or the
+  transfer fails.**
+- No liquidity pools or paired assets are needed to test: the contract never reads
+  on-chain LP state (`pool_id` is just 32 bytes). One SAC reward token suffices.
+
+## Cloudflare Workers signing — RESOLVED, no spike needed
+`@stellar/stellar-sdk` signing is proven in production across ~10 Workers in this
+account (Classic AND Soroban), with NO polyfills. Recipe: `nodejs_compat`, SDK
+14.4–15.0, named imports, own hashing via `crypto.subtle`, `Uint8Array` at runtime.
+Reference: `MAHORAGA/sdex-mm/src/trade/sdex-ops.ts` (local key),
+`MAHORAGA/sdex-mm/src/trade/aqua-swap.ts` (full Soroban round trip in-isolate),
+`LumenBroMobile/x-tip-bot` (cron triggers + Soroban).
+
+**Better than a raw Worker secret — the "signer-rack":** a Rust axum service in a
+Phala Intel-TDX enclave (`LumenBroMobile/phala-tee-signer/rust-signer/`). Keys derive
+from a hardware root and never leave the enclave; Workers call it over `fetch()` and
+push an `xdr.DecoratedSignature`. `POST /sign` DECODES THE XDR AND ENFORCES AN
+OPERATION WHITELIST (403 otherwise).
+→ Register an `lp-staking-*` policy prefix permitting ONLY `update_stake`. Then a
+compromised Worker + leaked auth secret still cannot post roots or withdraw —
+defense in depth over the on-chain decrease-only rule.
+Docs: `MAHORAGA/sdex-mm/.blueprint/TEE-SIGNER.md`.
+
+**Multisig pattern already in use** (answers the open admin question): sdex-mm runs
+the TEE signer at weight 1 with a hardware "keystone" key at weight 10 and a high
+threshold. Same shape as our operator/admin split — reuse it for the staking admin.
