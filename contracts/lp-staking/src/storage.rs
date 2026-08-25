@@ -65,7 +65,11 @@ pub struct PoolState {
     /// Undistributed numerator carried between updates so repeated small
     /// updates cannot silently discard emission to flooring (M-NEW-2).
     pub reward_remainder: i128,
-    /// Sum of stakes PROVEN IN THE CURRENT EPOCH. Reset at every new root.
+    /// Sum of ALL current-epoch staker amounts. Reset at every new root.
+    ///
+    /// Includes admin-created and admin-promoted records, not only
+    /// Merkle-proven ones — the invariant is
+    /// `epoch_staked == sum(staked_amount where epoch_id == current_epoch)`.
     ///
     /// The accumulator divides by `total_lp`, so a staker holding `s` earns
     /// `s/total_lp` of the emission. Without capping the aggregate, a fabricated

@@ -252,3 +252,46 @@ CLEANER ALTERNATIVE to renouncing: use the contract's two-step
 `propose_admin` -> `accept_admin` to move admin to the dev's OWN single-sig account.
 No shared account, no frozen-signer edge cases, and the dev ends up with a normal wallet
 they fully control.
+
+## Rounds 5-7: the poster role and the Sybil multiplier
+
+### Round 5 — BLOCKER (poster role introduced)
+Adding a hot `poster` key made a previously-accepted risk into an attack.
+**Sybil emission multiplier:** a fabricated root can name N addresses EACH with
+`lp_balance = total_lp`. Every leaf individually passes `lp_balance <= total_lp`, but the
+accumulator divides by `total_lp`, so each identity earns a FULL emission stream —
+N x the configured rate, from ONE root. `MIN_ROOT_INTERVAL` does not mitigate it.
+
+ROOT CAUSE OF THE MISS: this is the same aggregate-sum invariant flagged in round 2 as
+"an off-chain cron responsibility". That was defensible while only a trusted admin could
+post roots. Introducing the poster key invalidated the assumption and it was not
+re-audited. **A trust-model change invalidates earlier risk acceptances — re-audit them.**
+
+FIX: `PoolState.epoch_staked` caps aggregate current-epoch stake at `total_lp`.
+
+### Round 6 — BLOCKER (the fix was not internally consistent)
+Three accounting holes, each reopening the multiplier:
+1. Admin-created records went through a branch that never touched `epoch_staked`.
+2. `admin_force_clear_stake` subtracted unconditionally, so clearing a STALE record
+   (never counted) freed phantom capacity.
+3. `update_stake` does not set `LastProvenEpoch`, so a user whose record admin had
+   promoted into the current epoch could still `stake()` — adding again without releasing
+   the amount already counted.
+FIXED; all three verified to fail with their fix reverted.
+
+### Round 7 — CLEAN VERDICT
+> "Yes — the contract is safe to deploy immutably based on this review. I found no
+> remaining blocker."
+
+Invariant re-derived from scratch across all 15 mutation paths (stake x3, update_stake x5,
+force-clear, unstake, claim x2, set_merkle_root, remove_pool): `epoch_staked` always equals
+the sum of current-epoch staker amounts. Economic property confirmed:
+`epoch_staked / total_lp <= 1`, so capacity transfers between users over time but never
+creates concurrent emission streams.
+Also confirmed safe: `stake`/`update_stake` write the staker BEFORE the final cap check,
+which is fine because an `Err` rolls back the whole invocation.
+
+**74 tests pass.** Test-harness bugs also fixed this round: `FRESH=1` was a silent no-op
+(`stellar keys generate` won't overwrite and the error was swallowed); deploy errors went
+to /dev/null; and the proportionality assertion compared samples across a window too short
+to absorb ~5s of ledger stagger (widened to 300s, 3% tolerance).
