@@ -151,3 +151,54 @@ Docs: `MAHORAGA/sdex-mm/.blueprint/TEE-SIGNER.md`.
 **Multisig pattern already in use** (answers the open admin question): sdex-mm runs
 the TEE signer at weight 1 with a hardware "keystone" key at weight 10 and a high
 threshold. Same shape as our operator/admin split — reuse it for the staking admin.
+
+## Multi-leaf + proportionality + multisig — VERIFIED ON TESTNET (2026-08-24)
+
+Contract `CC4NZ73RYXIGF5KZFJ5MPBXREKLFR23TAIUZQUQXRIL2XDYDTMQIWO4G`.
+
+### Multi-leaf Merkle proofs (was previously unit-test-only)
+4 holders, 2-element proof paths, ALL accepted by the deployed contract using
+proofs built by the TypeScript builder. Forged proof (valid path + wrong balance)
+correctly rejected. `total_staked` = 650000000000 = exact sum.
+
+### Proportional accrual — EXACT
+Over a clean 90s window, per-unit-stake accrual was IDENTICAL to 7 significant
+figures across 0.5x / 1x / 2x / 3x stakes (`7.122507e-02`, spread 0.0000%).
+Deltas exactly 0.5:1:2:3. The accumulator math is correct on-chain.
+
+CAUTION FOR FUTURE RUNS: comparing raw `pending_reward` totals is INVALID —
+stakes land in different ledgers (head start) and holders carry pending from
+earlier epochs. An early version of the test flagged a false 6% anomaly that was
+purely sampling drift. Always compare DELTAS over a common window. The script now
+does this (`scripts/testnet-dryrun.sh` step 17).
+
+### Multisig admin — WORKS, and thresholds ARE enforced
+1. Added a co-signer (weight 10) to the admin account, master weight 1,
+   thresholds 1 → `set_pool_rate` SUCCEEDED. **A classic multisig G-account can
+   satisfy Soroban `require_auth`.** Safe to add the dev's wallet as a signer.
+2. Raised thresholds to 11 (needs 10+1 = both signers) → a single-signer contract
+   call was correctly REJECTED. Threshold enforcement is real.
+3. ⚠️ At 2-of-2, even `set-options` to LOWER the threshold again failed with
+   `TxBadAuth`. **A 2-of-2 admin that loses one signer is permanently locked out —
+   the treasury is unrecoverable, and there is no upgrade path.**
+4. Recovery verified: `stellar tx new ... --build-only` → `stellar tx sign
+   --sign-with-key A` → `stellar tx sign --sign-with-key B` → `stellar tx send`.
+   Thresholds restored. THIS IS THE REQUIRED RUNBOOK for any 2-of-2 admin op.
+
+### Admin multisig — decision needed
+- **Either-signer (weights >= threshold individually):** either party can operate
+  alone, including `withdraw` of the whole reward pool. Convenient, but the dev
+  gets unilateral treasury access.
+- **2-of-2 (threshold > any single weight):** neither can act alone. Safer against
+  a single compromised key, BUT see (3): losing either signer is terminal.
+  If chosen, BOTH parties must keep durable backups and rehearse the runbook.
+
+## TEE signer unavailable (~$40/mo, not being paid)
+Operator key will be a plain Cloudflare Worker secret (`sdex-ops.ts` pattern:
+`wrangler secret put` + `Keypair.fromSecret`). Acceptable because the ON-CHAIN
+restrictions bound the blast radius: a fully compromised operator key can ONLY
+decrease existing stakes — it cannot withdraw, set rates, post roots, create
+records, raise amounts, or move the admin. Worst case is griefing (users must
+re-prove), never fund loss.
+Hardening: CF account is FIDO/Windows-Hello 2FA; scope the API token to this
+Worker only; never commit `.dev.vars`.

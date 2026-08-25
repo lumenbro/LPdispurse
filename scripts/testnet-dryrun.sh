@@ -29,6 +29,10 @@ ADMIN=lp2-admin-test
 OPERATOR=lp2-operator-test
 USER=lp2-user-test
 ISSUER=lp2-issuer-test
+USER2=lp2-user2-test
+USER3=lp2-user3-test
+USER4=lp2-user4-test
+COSIGNER=lp2-cosigner-test
 
 RATE=462962963                 # ~4000 tokens/day at 7 decimals
 STAKE=100000000000             # 10,000.0 units
@@ -51,7 +55,7 @@ expect_fail() {
 [ -f "$LEAF" ] || fail "missing $LEAF"
 
 say "1. Keys"
-for k in "$ADMIN" "$OPERATOR" "$USER" "$ISSUER"; do
+for k in "$ADMIN" "$OPERATOR" "$USER" "$ISSUER" "$USER2" "$USER3" "$USER4" "$COSIGNER"; do
   if [ "${FRESH:-0}" = "1" ] || ! stellar keys address "$k" >/dev/null 2>&1; then
     stellar keys generate --network "$NET" --fund "$k" >/dev/null 2>&1 || true
   fi
@@ -61,6 +65,10 @@ ADMIN_G=$(stellar keys address "$ADMIN")
 OPERATOR_G=$(stellar keys address "$OPERATOR")
 USER_G=$(stellar keys address "$USER")
 ISSUER_G=$(stellar keys address "$ISSUER")
+USER2_G=$(stellar keys address "$USER2")
+USER3_G=$(stellar keys address "$USER3")
+USER4_G=$(stellar keys address "$USER4")
+COSIGNER_G=$(stellar keys address "$COSIGNER")
 
 say "2. Reward token (test asset -> SAC)"
 ASSET="TLMNR:$ISSUER_G"
@@ -70,7 +78,7 @@ ok "SAC $SAC"
 
 # Classic assets need a trustline on every G-account that will hold them.
 # (Contract addresses do NOT — the SAC keeps a contract balance instead.)
-for k in "$ADMIN" "$USER"; do
+for k in "$ADMIN" "$USER" "$USER2" "$USER3" "$USER4"; do
   stellar tx new change-trust --source-account "$k" --network "$NET" \
     --line "$ASSET" >/dev/null 2>&1 || true
   ok "trustline: $k"
@@ -169,6 +177,104 @@ invq "$OPERATOR" update_stake --caller "$OPERATOR_G" --user "$USER_G" --pool_ind
 EPOCH_AFTER=$(invq "$ADMIN" get_staker_info --user "$USER_G" --pool_index 0 | python3 -c 'import sys,json;print(json.load(sys.stdin)["epoch_id"])')
 [ "$EPOCH_AFTER" = "1" ] && ok "record stayed in epoch 1 (H-R2-1 fix confirmed on-chain)" \
   || fail "operator advanced a stale record to epoch $EPOCH_AFTER -- H-R2-1 REGRESSION"
+
+
+say "15. MULTI-LEAF TREE (4 holders, real proof paths)"
+# Single-leaf trees never exercise sibling hashing. This is the case that
+# actually matters on mainnet, and it is the last piece only covered by unit
+# tests until now.
+CUR_LEDGER=$(curl -s "https://horizon-testnet.stellar.org/" | python3 -c 'import sys,json;print(json.load(sys.stdin)["history_latest_ledger"])')
+B1=$((STAKE)); B2=$((STAKE * 2)); B3=$((STAKE * 3)); B4=$((STAKE / 2))
+TREE_JSON=$(node "$ROOT_DIR/staking-site/scripts/build-tree.mjs" \
+  "$CONTRACT" 0 "$POOL_ID_HEX" 3 \
+  "$USER_G:$B1" "$USER2_G:$B2" "$USER3_G:$B3" "$USER4_G:$B4")
+TREE_ROOT=$(echo "$TREE_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin)["root"])')
+TOTAL_LP=$(echo "$TREE_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin)["totalLp"])')
+ok "root $TREE_ROOT  total_lp $TOTAL_LP"
+
+invq "$ADMIN" set_merkle_root --admin "$ADMIN_G" --pool_index 0 \
+  --root "$TREE_ROOT" --snapshot_ledger "$CUR_LEDGER" --total_lp "$TOTAL_LP" >/dev/null
+ok "epoch 3 root posted"
+
+# Each holder stakes with their own multi-element proof.
+for i in 0 1 2 3; do
+  H_ADDR=$(echo "$TREE_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['holders'][$i]['address'])")
+  H_BAL=$(echo "$TREE_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['holders'][$i]['balance'])")
+  H_PROOF=$(echo "$TREE_JSON" | python3 -c "import sys,json;print(json.dumps(json.load(sys.stdin)['holders'][$i]['proof']))")
+  H_LEN=$(echo "$TREE_JSON" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['holders'][$i]['proof']))")
+  case $i in 0) H_KEY=$USER;; 1) H_KEY=$USER2;; 2) H_KEY=$USER3;; 3) H_KEY=$USER4;; esac
+  stellar contract invoke --id "$CONTRACT" --source "$H_KEY" --network "$NET" -- \
+    stake --user "$H_ADDR" --pool_index 0 --lp_balance "$H_BAL" --proof "$H_PROOF" >/dev/null 2>&1 \
+    || fail "holder $i stake REJECTED with a ${H_LEN}-element proof -- multi-leaf path broken"
+  ok "holder $i staked ($H_LEN-element proof)"
+done
+ok "total_staked $(invq "$ADMIN" get_pool_state --pool_index 0 | python3 -c 'import sys,json;print(json.load(sys.stdin)["total_staked"])')"
+
+say "16. Forged proof must be rejected"
+# Holder 1's proof with holder 0's balance -- a valid-looking but wrong leaf.
+BAD_PROOF=$(echo "$TREE_JSON" | python3 -c "import sys,json;print(json.dumps(json.load(sys.stdin)['holders'][1]['proof']))")
+expect_fail "stake with a mismatched proof" \
+  stellar contract invoke --id "$CONTRACT" --source "$USER2" --network "$NET" -- \
+  stake --user "$USER2_G" --pool_index 0 --lp_balance "$B3" --proof "$BAD_PROOF"
+
+say "17. Proportional split across 4 holders (DELTA method)"
+# Comparing raw pending totals is WRONG here: each stake lands in a different
+# ledger, so earlier stakers have a head start, and holder 0 also carries
+# pending from epochs 1-2. Comparing the DELTA over a common window cancels
+# both effects, leaving pure accrual rate -- which must be exactly
+# proportional to each holder's balance.
+snap() {
+  for g in "$USER_G" "$USER2_G" "$USER3_G" "$USER4_G"; do
+    invq "$ADMIN" pending_reward --user "$g" --pool_index 0 | tr -d '"'
+  done
+}
+T0=$(snap)
+echo "  sampling a 60s window..."
+sleep 60
+T1=$(snap)
+python3 - "$B1" "$B2" "$B3" "$B4" <<PYEOF
+import sys
+b = [int(x) for x in sys.argv[1:5]]
+t0 = [int(x) for x in """$T0""".split()]
+t1 = [int(x) for x in """$T1""".split()]
+d  = [a - z for a, z in zip(t1, t0)]
+print("  deltas:", d)
+assert all(x > 0 for x in d), f"a holder stopped accruing: {d}"
+per = [x / y for x, y in zip(d, b)]
+spread = (max(per) - min(per)) / max(per)
+print("  delta per unit stake:", [f"{p:.6e}" for p in per])
+print(f"  spread {spread*100:.3f}%")
+assert spread < 0.02, f"accrual not proportional to balance (spread {spread:.4f})"
+print("  OK accrual is proportional to stake across all 4 holders")
+PYEOF
+
+say "18. MULTISIG ADMIN (can a multisig account still satisfy require_auth?)"
+# This is the make-or-break test for adding the dev's wallet as a co-signer on
+# a NON-UPGRADEABLE contract: if a multisig account could not authorize, the
+# admin would be permanently locked out with no way to fix it.
+stellar tx new set-options --source-account "$ADMIN" --network "$NET" \
+  --signer "$COSIGNER_G" --signer-weight 10 >/dev/null 2>&1 || fail "could not add co-signer"
+ok "added co-signer $COSIGNER_G (weight 10)"
+stellar tx new set-options --source-account "$ADMIN" --network "$NET" \
+  --master-weight 1 --low-threshold 1 --med-threshold 1 --high-threshold 1 >/dev/null 2>&1 \
+  || fail "could not set thresholds"
+ok "master weight 1, thresholds 1 (either signer can authorize)"
+
+invq "$ADMIN" set_pool_rate --admin "$ADMIN_G" --pool_index 0 --new_rate "$RATE" >/dev/null \
+  && ok "multisig admin STILL AUTHORIZES contract calls (master key path)" \
+  || fail "multisig admin could NOT authorize -- do NOT make the mainnet admin multisig"
+
+# Now require BOTH signers (threshold 11 > either weight alone).
+stellar tx new set-options --source-account "$ADMIN" --network "$NET" \
+  --med-threshold 11 --low-threshold 11 --high-threshold 11 >/dev/null 2>&1 || true
+ok "thresholds raised to 11 (2-of-2 required)"
+expect_fail "single-signer admin call at 2-of-2 threshold" \
+  stellar contract invoke --id "$CONTRACT" --source "$ADMIN" --network "$NET" -- \
+  set_pool_rate --admin "$ADMIN_G" --pool_index 0 --new_rate "$RATE"
+# Restore so the state file stays usable.
+stellar tx new set-options --source-account "$ADMIN" --network "$NET" \
+  --med-threshold 1 --low-threshold 1 --high-threshold 1 >/dev/null 2>&1 || true
+ok "thresholds restored to 1"
 
 cat > "$STATE" <<EOF
 TESTNET_CONTRACT=$CONTRACT
