@@ -202,3 +202,26 @@ records, raise amounts, or move the admin. Worst case is griefing (users must
 re-prove), never fund loss.
 Hardening: CF account is FIDO/Windows-Hello 2FA; scope the API token to this
 Worker only; never commit `.dev.vars`.
+
+### ⚠️ Soroban require_auth is gated by the MEDIUM threshold (verified 2026-08-24)
+Tested directly on testnet with a 2-signer admin account (master w:1, co-signer w:10):
+
+| thresholds (low/med/high) | can the w:1 key invoke the contract? |
+|---|---|
+| 1 / 1 / 10  (the sdex-mm config) | YES — including `withdraw`. Funds actually moved. |
+| 1 / 10 / 10 | NO — blocked. |
+
+**The sdex-mm threshold numbers must NOT be copied here.** In sdex-mm the w:1 key is a
+POLICY-GATED TEE signer that can only place trades, so med=1 is safe there. This contract
+has no policy gate: any signer meeting MED threshold gets full admin, including draining
+the reward pool.
+
+Also: with high=10 and master weight 1, the admin's OWN key can no longer change the
+account's thresholds — that op must be signed by the w:10 co-signer.
+
+**Recommended admin config (option A):** you w:10, dev w:10, med=10, high=20.
+Either party can operate the admin page; changing signers requires BOTH, so neither can
+unilaterally remove the other. If either key is lost, signer changes freeze permanently
+but the contract stays operable by the survivor (treasury never stranded).
+Escape hatch: the contract's two-step propose_admin/accept_admin can migrate admin to a
+fresh account as long as the current account can still meet MED.
