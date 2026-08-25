@@ -65,8 +65,8 @@ Storage:
 
 ## Open questions for dev before implementation
 
-1. **Drip amount + cooldown:** 100 xLMNR / 24h? Or different?
-2. **Initial faucet funding:** how much xLMNR seed (50K = ~500 days @ full daily claims)?
+1. ~~**Drip amount + cooldown:** 100 xLMNR / 24h?~~ **Answered 2026-06-17: 100 xLMNR per claim, 12h cooldown** → 200 xLMNR/day per address max.
+2. **Initial faucet funding:** how much xLMNR seed? At 200/day per address × 500 active addresses = ~100K xLMNR/day burn rate. Need dev's call on initial fund (250K = ~2.5 days at heavy use, 2.5M = ~25 days).
 3. **Captcha decision:** Cloudflare Turnstile (free, invisible) or zero friction?
 4. **Trustline requirement:** require user has xLMNR trustline before claim? (near-free Sybil dampener)
 5. **Landing page placement:** dedicated `<Faucet>` section, OR add a Claim button to Hero CTA row alongside Buy/Follow/Whitepaper?

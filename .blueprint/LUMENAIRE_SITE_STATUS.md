@@ -1,86 +1,74 @@
-# LUMENAIRE Site Rebuild — Status
+# LUMENAIRE Site Rebuild — Status & Handoff
 
-**Last updated:** 2026-05-31
-**Repo:** `XLMNR/LUMENAIRE` (GitHub) — user has push access via `lumenbro` GitHub account
-**Local clone:** `/home/brandonian/LUMENAIRE/` (NOT inside LPdispurse — separate clone)
-**Active branch:** `site-rebuild` (off `main`)
-**Vercel project:** `v0-v0jose60639eb37ccd` (team `stellarowlpha`) — name is a v0 generator leftover
+**Last updated:** 2026-07-07
+**Repo:** `XLMNR/LUMENAIRE` (GitHub) — user pushes via `lumenbro` GitHub account (collaborator)
+**Local clone:** `/home/brandonian/LUMENAIRE/` (separate from LPdispurse)
+**Active branch:** `site-rebuild` — **21 commits ahead of `main`, NOT merged yet**
+**HEAD commit:** `d4ffa46`
+**Vercel project (dev's):** `v0-v0jose60639eb37ccd` on team `stellarowlpha` — user has NO console access (only GitHub push + a deployment-view bypass)
 **Preview URL:** `https://v0-v0jose60639eb37ccd-git-site-rebuild-stellarowlpha.vercel.app`
-**Production URL** (untouched, still under-construction page): `https://www.thelumenaire.com`
+**Production (untouched, still "Under Construction"):** `https://www.thelumenaire.com`
 
-## Stack
+---
 
-- Next.js 14 App Router
-- TypeScript, Tailwind CSS, lucide-react
-- pnpm for deps
-- `@stellar/stellar-sdk`, `@vercel/blob`, `@creit-tech/stellar-wallets-kit` (added for staking integration)
-- next.config.js has CORS headers for `/.well-known/stellar.toml`
+## STATUS: site is functionally COMPLETE. Not merged to main yet (user's call, pending launch coordination + the July security incident took priority).
 
-## Marketing site progress (3 of 8 sections)
+### Pages (all built, all Vercel-green)
+| Route | Contents |
+|-------|----------|
+| `/` (home) | Hero → Features → Tokenomics → Pairs → Roadmap → Journey → Footer |
+| `/collaborations` | Intro → Ascension Initiative infographic → Partners (5 cards) |
+| `/staking` | xLMNR infographic hero banner → live StakingDashboard (wallet connect) |
+| `/admin` | Admin dashboard (wallet-gated) |
+| `/api/cron`, `/api/proof/[pool]/[address]` | Server routes (staking) |
 
-| # | Section | Status | Notes |
-|---|---------|--------|-------|
-| 1 | Nav | ✓ | Frosted glass, 6 pills + Staking pill + Buy $xLMNR CTA, mobile sheet, IntersectionObserver active-section tracking |
-| 2 | Hero | ✓ | xLMNR character mascot (replaced LMNR cartoon), animated dots, glow halo, CTAs, supply strip, manifesto "Stellar moves the money / Lumenaire moves the people" |
-| 3 | Features ("More Than a Meme") | ✓ | 3 cards: DeFi Platform, LP Staking (clickable, links to `/staking`), Higher Rewards |
-| 4 | Tokenomics | ❌ pending | **Blocked on dev** for xLMNR-specific supply numbers (legacy spec had 30-50M burn target which dev removed) |
-| 5 | Roadmap | ✓ | 5 phases per dev's final content: Launch & Liquidity (done) · xLMNR V2 Migration (active) · Staking (next) · Tipping Layer (next) · DeFi Suite (next) |
-| 6 | Trade | ❌ pending | Unblocked — have xLMNR issuer from stellar.toml. Just need to build copy-to-clipboard + 3 DEX cards |
-| 7 | Journey | ❌ pending | Unblocked — 3 short story cards |
-| 8 | Footer | ❌ pending | Unblocked — community CTA + X handle `@X_LMNR` |
+### Section components (`components/`)
+site-nav, hero, hero-dots, features, tokenomics, pairs, roadmap, journey, ascension, partners, site-footer, logo + `components/staking/*` (7) + `lib/staking/*` (5)
 
-## Staking integration progress
+### Key content values (latest per dev)
+- **Max supply: 333M** (Hero strip + Tokenomics) — was 418M→400M→333M
+- Tokenomics 4th tile: **"Liquidity Provision" / "Rewarded Staking Pools" / XLM·SHX·VELO**
+- Hero manifesto: "Stellar moves the money. Lumenaire moves the people."
+- Hero CTAs: Buy $xLMNR / **Claim Free xLMNR** (→ Stellar Drip faucet) / Follow Us / Whitepaper
+- Pairs: "Over 75 Trading Pairs", live **top-20** from Horizon (hourly revalidate)
+- Roadmap: 5 phases (Launch✓ / xLMNR V2 Migration🟣 / Staking / Tipping / DeFi Suite)
+- Footer: Follow on X (@X_LMNR) + Follow on Telegram (t.me/X_LMNR)
 
-- `/staking` route ported from `LPdispurse/staking-site/` — full UI working
-- `/admin` route ported — admin dashboard with wallet connect
-- `/api/cron/route.ts` + `/api/proof/[pool]/[address]/route.ts` ported
-- 7 staking components under `components/staking/`, 5 lib modules under `lib/staking/`
-- `WalletProvider` scoped via nested layout (only loads on `/staking` and `/admin`, not on marketing pages)
-- Tailwind `lmnr-*` palette added
-- Staking-specific CSS scoped via `.staking-root` class
-- `bg-lmnr.jpg` background applied via background-image stack on `.staking-root` (NOT pseudo-elements — caused stacking-context bugs earlier; see commit `81b1942`)
-- **`vercel.json` cron NOT enabled** — staking is dormant by design until xLMNR env vars are set in Vercel
-- Placeholder banner on `/staking` shows when `NEXT_PUBLIC_CONTRACT_ID` is empty
+### Partners (5 cards, /collaborations)
+1. **Stellar Forge** (parent of Stellar Drip faucet) — CTA links to faucet
+2. ACT — authentic-payment.com
+3. JDM — justdumbmemescoins.netlify.app
+4. BLUFAB — blufabric.org
+5. GAMBIT — gambit64.com
 
-## Important code locations
+### Faucet
+Using Stellar Drip (Stellar Forge's, on base44) as MVP — link-out only (iframe blocked by x-frame-options). Custom faucet SHELVED — spec in `.blueprint/FAUCET_PLAN.md`.
 
-- `app/page.tsx` — marketing home, renders `<SiteNav />` + 5 section components
-- `app/staking/page.tsx` + `app/staking/layout.tsx` + `app/staking/staking.css` — staking route + scoped styles
-- `app/admin/page.tsx` + `app/admin/layout.tsx` — admin route
-- `app/api/cron/route.ts` — daily reconcile + Merkle post (NOT triggered — no cron schedule)
-- `app/api/proof/[pool]/[address]/route.ts` — proof lookup endpoint
-- `components/site-nav.tsx` — handles both same-page sections (smooth scroll) AND route changes (Next.js Link)
-- `components/staking/*` — full wallet/staking UI
-- `lib/scroll.ts` — `smoothJumpTo(id)` shared utility
-- `lib/staking/*` — contract client, Horizon helpers, Merkle, indexer
+---
 
-## Env vars needed when dev populates Vercel (currently unset → placeholder mode)
+## WHAT'S LEFT (all non-blocking, pending launch)
 
-| Var | Source | Notes |
-|-----|--------|-------|
-| `NEXT_PUBLIC_CONTRACT_ID` | xLMNR staking contract addr | Setting this hides the placeholder banner |
-| `NEXT_PUBLIC_ADMIN_WALLET` | admin G... address | For admin page wallet gate |
-| `NEXT_PUBLIC_HORIZON_URL` | `https://horizon.stellar.org` | mainnet |
-| `NEXT_PUBLIC_RPC_URL` | `https://rpc.lightsail.network/` or similar | Soroban RPC |
-| `NEXT_PUBLIC_NETWORK_PASSPHRASE` | `Public Global Stellar Network ; September 2015` | |
-| `POOL_CONFIG` | JSON array of `{index, poolId}` | new xLMNR SDEX pool IDs |
-| `CRON_SECRET` | random secret | bearer auth for /api/cron |
-| `ADMIN_SECRET_KEY` | S... secret key | signs Merkle root + reconcile txs in cron |
-| `BLOB_READ_WRITE_TOKEN` | Vercel Blob token | auto-set if Blob enabled on the project |
+1. **Merge `site-rebuild` → main** — PR NOT opened yet. Draft is in `LUMENAIRE/PR_DESCRIPTION.md` (untracked scratch file — don't commit it). Opening the PR + merge deploys thelumenaire.com to the full site.
+2. **Dev sets public env vars** on his Vercel (`NEXT_PUBLIC_*` + `POOL_CONFIG`) → clears the /staking placeholder banner. Full list in `.blueprint/ENV_HANDOFF.md`.
+3. **Proof/Blob coupling caveat** (see ENV_HANDOFF.md): /staking DISPLAY works with public env, but the STAKE action needs cron + Blob co-located. Cleanest fix = co-locate cron on dev's project after admin handoff.
+4. **Partner copy polish** — ACT/JDM have generic descriptions (their sites had no OG meta); dev can refine.
 
-## Dev server (local)
+## CONTRACT SIDE — DONE (see MIGRATION_xLMNR.md + ENV_HANDOFF.md)
+- Contract `CBDA7H3X…BVAE` upgraded to xLMNR, funded 10,990 xLMNR, 3 pools registered (XLM/SHX/VELO).
+- Cron `POOL_CONFIG` on user's own `lmnr-staking` Vercel project flipped to the 3 new pools + redeployed → posts roots at next 00:00 UTC.
+- ⚠️ **SECURITY INCIDENT (July 2026):** the contract admin/deployer key `SCZKOSUO…` was compromised (committed to public repos lumenjoule-sdk + soroban-policies, scraped, 80 XLM drained). `set_admin` to a fresh xBull key is PENDING — needs user's new pubkey. 10,990 xLMNR still safe (attacker hasn't touched contract). See `/home/brandonian/SECURITY_INCIDENT.md` for the full rotation checklist.
 
-Started with: `cd /home/brandonian/LUMENAIRE && nohup pnpm dev --hostname 0.0.0.0 --port 3000 > /tmp/lumenaire-dev.log 2>&1 & disown`
+---
 
-If it dies: `lsof -ti:3000 | xargs kill 2>/dev/null; rm -rf .next; nohup pnpm dev ...`
+## HOW TO RESUME (dev server)
+```
+cd /home/brandonian/LUMENAIRE
+nohup pnpm dev --hostname 0.0.0.0 --port 3000 > /tmp/lumenaire-dev.log 2>&1 & disown
+# open http://localhost:3000
+```
+Type-check without clobbering dev server: `pnpm exec tsc --noEmit` (NOT `pnpm build` while dev runs — shares .next/).
+Prototype reference (LMNR-era design): `cd /home/brandonian/staging/lumenaire-handoff-v2/design_handoff_lumenaire_site/prototype && python3 -m http.server 8000`
 
-**WARNING:** Don't run `pnpm build` while dev server is running — they share `.next/` and `build` clobbers the dev cache, killing the server. Use `pnpm exec tsc --noEmit` for type-checking instead.
-
-Prototype reference server: `cd /home/brandonian/staging/lumenaire-handoff-v2/design_handoff_lumenaire_site/prototype && python3 -m http.server 8000` (the design vision — original LMNR branding, used as visual ground truth for porting).
-
-## What's next
-
-1. Update staking contract for xLMNR (user has new contract address — needs strategy decision: upgrade legacy vs. fresh deploy)
-2. Bring `/staking` to feature parity with `staking.lumenbro.com` (full audit of behavior)
-3. Dev populates Vercel env vars, restores cron schedule
-4. (Eventually) build Tokenomics + Trade + Journey + Footer to ship the full site
+## PUSH FLOW
+Each push to `site-rebuild` auto-deploys a Vercel preview. Confirm builds with:
+`gh api repos/XLMNR/LUMENAIRE/commits/<sha>/status --jq .state`

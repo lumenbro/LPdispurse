@@ -295,3 +295,20 @@ which is fine because an `Err` rolls back the whole invocation.
 (`stellar keys generate` won't overwrite and the error was swallowed); deploy errors went
 to /dev/null; and the proportionality assertion compared samples across a window too short
 to absorb ~5s of ledger stagger (widened to 300s, 3% tolerance).
+
+## Full testnet dry run — ALL 43 CHECKS PASSED (2026-08-24)
+Contract `CBBVDK6DJMXRCPOQZGAJXRIYLESMI5ZGLHTMZD47DQ2KBD6T5GMYIL4J` (testnet),
+run against the current WASM (poster role + epoch_staked cap + round-6 fixes).
+
+Covered end-to-end on real chain: 4-address constructor; add_pool + per-pool rate +
+cached total_emission_rate; fund; poster posts roots; TypeScript-built proofs accepted
+(leaf format verified against the deployed contract); multi-leaf 4-holder trees with
+2-element proof paths; forged proof rejected; real accrual and claim; operator decrease
+allowed; H-1 stale settlement frozen across an epoch boundary; H-R2-1 operator cannot
+renew a stale record; proportional accrual (spread 1.64% over a 300s window); multisig
+admin authorizes and 2-of-2 thresholds are enforced.
+
+Negative tests all rejected on-chain: proof replay, operator withdraw, operator
+set_pool_rate, operator stake increase.
+
+Script: `scripts/testnet-dryrun.sh` (repeatable; `FRESH=1` for new keys/contract).
