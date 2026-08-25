@@ -225,3 +225,30 @@ unilaterally remove the other. If either key is lost, signer changes freeze perm
 but the contract stays operable by the survivor (treasury never stranded).
 Escape hatch: the contract's two-step propose_admin/accept_admin can migrate admin to a
 fresh account as long as the current account can still meet MED.
+
+### Renounce path — VERIFIED (2026-08-24)
+Q: can the operator renounce by zeroing their own signer weight, leaving the dev in control?
+A: YES.
+
+1. `set-options --master-weight 0`, signed by the w:10 co-signer (set_options is a HIGH
+   threshold op, so the w:1 master could NOT sign its own removal). Result: master weight 0.
+2. The renounced key is then powerless — a contract invoke with it is rejected.
+3. **The surviving added signer CAN still operate the contract.** Verified at protocol level:
+   built an invoke with `source = admin ACCOUNT`, signed ONLY with the added (non-master)
+   signer's key, submitted → SUCCESS. This is exactly the wallet-connect/admin-page path.
+
+TOOLING NOTE: the Stellar CLI cannot do this — `contract invoke --sign-with-key <other>`
+errors with "Address cannot be used to sign", and `--build-only` for a Soroban invoke
+produces an unsimulated envelope (`TxMalformed` on submit). Multisig contract ops must go
+through the SDK/wallet path: build -> `simulateTransaction` -> `assembleTransaction` ->
+sign -> `sendTransaction`. Classic ops (set_options) DO work via
+`tx new --build-only | tx sign | tx sign | tx send`.
+
+FREEZE CAVEAT (accepted — the shared admin account is a burner): if `high_threshold`
+exceeds the surviving signer's weight, signer/threshold changes become impossible forever.
+The contract itself stays fully operable as long as MED is still satisfiable.
+
+CLEANER ALTERNATIVE to renouncing: use the contract's two-step
+`propose_admin` -> `accept_admin` to move admin to the dev's OWN single-sig account.
+No shared account, no frozen-signer edge cases, and the dev ends up with a normal wallet
+they fully control.
