@@ -26,6 +26,10 @@ pub enum DataKey {
     PendingAdmin,
     /// Minimal-privilege role allowed to call update_stake only (cron key).
     Operator,
+    /// Minimal-privilege role allowed to call set_merkle_root only. Lets the
+    /// automation post snapshots without holding admin, so handing off admin
+    /// never disturbs the cron (and vice versa).
+    Poster,
     LmnrToken,
     PoolCount,
     /// Cached sum of active pools' rates so the view never loops (L-NEW-4).
@@ -123,6 +127,14 @@ pub fn get_operator(env: &Env) -> Option<Address> {
 
 pub fn set_operator(env: &Env, operator: &Address) {
     env.storage().instance().set(&DataKey::Operator, operator);
+}
+
+pub fn get_poster(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&DataKey::Poster)
+}
+
+pub fn set_poster(env: &Env, poster: &Address) {
+    env.storage().instance().set(&DataKey::Poster, poster);
 }
 
 pub fn get_lmnr_token(env: &Env) -> Address {

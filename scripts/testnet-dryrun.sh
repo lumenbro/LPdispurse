@@ -33,6 +33,7 @@ USER2=lp2-user2-test
 USER3=lp2-user3-test
 USER4=lp2-user4-test
 COSIGNER=lp2-cosigner-test
+POSTER=lp2-poster-test
 
 RATE=462962963                 # ~4000 tokens/day at 7 decimals
 STAKE=100000000000             # 10,000.0 units
@@ -55,7 +56,7 @@ expect_fail() {
 [ -f "$LEAF" ] || fail "missing $LEAF"
 
 say "1. Keys"
-for k in "$ADMIN" "$OPERATOR" "$USER" "$ISSUER" "$USER2" "$USER3" "$USER4" "$COSIGNER"; do
+for k in "$ADMIN" "$OPERATOR" "$USER" "$ISSUER" "$USER2" "$USER3" "$USER4" "$COSIGNER" "$POSTER"; do
   if [ "${FRESH:-0}" = "1" ] || ! stellar keys address "$k" >/dev/null 2>&1; then
     stellar keys generate --network "$NET" --fund "$k" >/dev/null 2>&1 || true
   fi
@@ -69,6 +70,7 @@ USER2_G=$(stellar keys address "$USER2")
 USER3_G=$(stellar keys address "$USER3")
 USER4_G=$(stellar keys address "$USER4")
 COSIGNER_G=$(stellar keys address "$COSIGNER")
+POSTER_G=$(stellar keys address "$POSTER")
 
 say "2. Reward token (test asset -> SAC)"
 ASSET="TLMNR:$ISSUER_G"
@@ -91,7 +93,7 @@ ok "minted 100,000 TLMNR to admin"
 
 say "3. Deploy contract (atomic constructor)"
 CONTRACT=$(stellar contract deploy --wasm "$WASM" --source "$ADMIN" --network "$NET" -- \
-  --admin "$ADMIN_G" --operator "$OPERATOR_G" --lmnr_token "$SAC" 2>/dev/null | tail -1)
+  --admin "$ADMIN_G" --operator "$OPERATOR_G" --poster "$POSTER_G" --lmnr_token "$SAC" 2>/dev/null | tail -1)
 [ -n "$CONTRACT" ] || fail "deploy failed"
 ok "contract $CONTRACT"
 
@@ -101,6 +103,7 @@ invq() { inv "$@" 2>/dev/null; }
 say "4. Roles set by constructor"
 [ "$(invq "$ADMIN" get_admin)" = "\"$ADMIN_G\"" ] && ok "admin" || fail "admin mismatch"
 ok "operator $(invq "$ADMIN" get_operator)"
+ok "poster   $(invq "$ADMIN" get_poster)"
 
 say "5. add_pool"
 IDX=$(invq "$ADMIN" add_pool --admin "$ADMIN_G" --pool_id "$POOL_ID_HEX" --reward_rate "$RATE")

@@ -15,6 +15,7 @@ struct TestEnv {
     contract_id: Address,
     admin: Address,
     operator: Address,
+    poster: Address,
     token_id: Address,
     token_admin: token::StellarAssetClient<'static>,
 }
@@ -27,6 +28,7 @@ fn setup_env() -> TestEnv {
 
     let admin = Address::generate(&env);
     let operator = Address::generate(&env);
+    let poster = Address::generate(&env);
     let token_issuer = Address::generate(&env);
 
     let sac = env.register_stellar_asset_contract_v2(token_issuer);
@@ -35,7 +37,7 @@ fn setup_env() -> TestEnv {
 
     let contract_id = env.register(
         LpStakingContract,
-        LpStakingContractArgs::__constructor(&admin, &operator, &token_id),
+        LpStakingContractArgs::__constructor(&admin, &operator, &poster, &token_id),
     );
 
     TestEnv {
@@ -43,6 +45,7 @@ fn setup_env() -> TestEnv {
         contract_id,
         admin,
         operator,
+        poster,
         token_id,
         token_admin,
     }
@@ -1446,4 +1449,104 @@ fn test_print_leaf_vectors() {
         }
         s
     });
+}
+
+
+// ==================== poster role ====================
+
+#[test]
+fn test_poster_can_post_roots() {
+    let t = setup_env();
+    let c = t.client();
+    let pool_id = make_pool_id(&t.env, 1);
+    c.add_pool(&t.admin, &pool_id, &RATE);
+
+    let root = make_pool_id(&t.env, 9);
+    c.set_merkle_root(&t.poster, &0, &root, &100, &(10_000 * MIN_STAKE));
+    assert_eq!(c.get_merkle_root(&0).epoch_id, 1);
+    assert_eq!(c.get_poster(), Some(t.poster.clone()));
+}
+
+#[test]
+fn test_poster_cannot_do_anything_else() {
+    let t = setup_env();
+    let c = t.client();
+    t.fund_contract(1_000_000_000);
+    let pool_id = make_pool_id(&t.env, 1);
+    c.add_pool(&t.admin, &pool_id, &RATE);
+    let user = Address::generate(&t.env);
+
+    assert!(c.try_withdraw(&t.poster, &1_000).is_err());
+    assert!(c.try_set_pool_rate(&t.poster, &0, &1).is_err());
+    assert!(c
+        .try_add_pool(&t.poster, &make_pool_id(&t.env, 2), &RATE)
+        .is_err());
+    assert!(c.try_remove_pool(&t.poster, &0).is_err());
+    assert!(c
+        .try_update_stake(&t.poster, &user, &0, &(100 * MIN_STAKE))
+        .is_err());
+    assert!(c.try_set_operator(&t.poster, &user).is_err());
+    assert!(c.try_set_poster(&t.poster, &user).is_err());
+    assert!(c.try_propose_admin(&t.poster, &user).is_err());
+}
+
+#[test]
+fn test_operator_cannot_post_roots() {
+    let t = setup_env();
+    let c = t.client();
+    let pool_id = make_pool_id(&t.env, 1);
+    c.add_pool(&t.admin, &pool_id, &RATE);
+    let root = make_pool_id(&t.env, 9);
+    assert!(c
+        .try_set_merkle_root(&t.operator, &0, &root, &100, &(10_000 * MIN_STAKE))
+        .is_err());
+}
+
+/// The poster is rate-limited so a compromised automation key cannot churn
+/// epochs faster than a human can notice.
+#[test]
+fn test_poster_rate_limited_admin_is_not() {
+    let t = setup_env();
+    let c = t.client();
+    let pool_id = make_pool_id(&t.env, 1);
+    c.add_pool(&t.admin, &pool_id, &RATE);
+    let root = make_pool_id(&t.env, 9);
+    let lp = 10_000 * MIN_STAKE;
+
+    c.set_merkle_root(&t.poster, &0, &root, &100, &lp);
+
+    // Immediately again as poster: refused.
+    assert!(c
+        .try_set_merkle_root(&t.poster, &0, &root, &101, &lp)
+        .is_err());
+
+    // Admin is exempt — can always correct a bad root.
+    c.set_merkle_root(&t.admin, &0, &root, &101, &lp);
+    assert_eq!(c.get_merkle_root(&0).epoch_id, 2);
+
+    // After the interval elapses the poster may post again.
+    t.advance_to(1000 + crate::MIN_ROOT_INTERVAL + 1);
+    c.set_merkle_root(&t.poster, &0, &root, &102, &lp);
+    assert_eq!(c.get_merkle_root(&0).epoch_id, 3);
+}
+
+#[test]
+fn test_admin_can_rotate_poster() {
+    let t = setup_env();
+    let c = t.client();
+    let pool_id = make_pool_id(&t.env, 1);
+    c.add_pool(&t.admin, &pool_id, &RATE);
+    let new_poster = Address::generate(&t.env);
+
+    c.set_poster(&t.admin, &new_poster);
+    assert_eq!(c.get_poster(), Some(new_poster.clone()));
+
+    let root = make_pool_id(&t.env, 9);
+    let lp = 10_000 * MIN_STAKE;
+    c.set_merkle_root(&new_poster, &0, &root, &100, &lp);
+    // Old poster is now powerless.
+    t.advance_to(1000 + crate::MIN_ROOT_INTERVAL + 1);
+    assert!(c
+        .try_set_merkle_root(&t.poster, &0, &root, &101, &lp)
+        .is_err());
 }

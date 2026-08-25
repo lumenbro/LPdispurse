@@ -52,6 +52,14 @@ pub const MAX_STAKE: i128 = 1_000_000_000_000_000_000_000;
 /// Reject snapshots older than ~7 days (at ~5s/ledger).
 pub const MAX_SNAPSHOT_AGE: u32 = 120_960;
 
+/// Minimum seconds between roots posted by the POSTER role (24h). The admin is
+/// exempt, so a bad root can always be corrected immediately.
+///
+/// This caps how fast a compromised automation key can churn epochs, leaving a
+/// window to notice a fabricated root and respond (zero the rate, remove the
+/// pool, or withdraw the treasury).
+pub const MIN_ROOT_INTERVAL: u64 = 86_400;
+
 #[contract]
 pub struct LpStakingContract;
 
@@ -62,9 +70,16 @@ impl LpStakingContract {
     /// Atomic initialization at deploy time (C-1). There is no separate
     /// `initialize`, so there is no window in which a third party can claim
     /// admin of a freshly deployed instance.
-    pub fn __constructor(env: Env, admin: Address, operator: Address, lmnr_token: Address) {
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        operator: Address,
+        poster: Address,
+        lmnr_token: Address,
+    ) {
         storage::set_admin(&env, &admin);
         storage::set_operator(&env, &operator);
+        storage::set_poster(&env, &poster);
         storage::set_lmnr_token(&env, &lmnr_token);
         storage::set_pool_count(&env, 0);
         storage::extend_instance_ttl(&env);
@@ -182,7 +197,7 @@ impl LpStakingContract {
         snapshot_ledger: u32,
         total_lp: i128,
     ) -> Result<(), ContractError> {
-        Self::require_admin(&env, &admin)?;
+        let is_admin = Self::require_poster_or_admin(&env, &admin)?;
         Self::require_active_pool(&env, pool_index)?;
         storage::extend_instance_ttl(&env);
 
@@ -206,6 +221,13 @@ impl LpStakingContract {
             let prev = storage::get_merkle_root(&env, pool_index);
             if snapshot_ledger <= prev.snapshot_ledger {
                 return Err(ContractError::StaleSnapshotLedger);
+            }
+            // Rate-limit the automation key; the admin can always correct a bad
+            // root immediately.
+            if !is_admin
+                && env.ledger().timestamp() < prev.posted_at.saturating_add(MIN_ROOT_INTERVAL)
+            {
+                return Err(ContractError::RootTooSoon);
             }
             prev.epoch_id
         } else {
@@ -248,6 +270,7 @@ impl LpStakingContract {
             root,
             snapshot_ledger,
             total_lp,
+            by_admin: is_admin,
         }
         .publish(&env);
         Ok(())
@@ -310,6 +333,33 @@ impl LpStakingContract {
         events::OperatorChanged {
             old_operator,
             new_operator,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Set the minimal-privilege poster (the snapshot automation key). The
+    /// poster may ONLY call `set_merkle_root` — never withdraw, change rates,
+    /// move roles, or reconcile stakes.
+    ///
+    /// NOTE: this key is NOT harmless. A compromised poster can publish a
+    /// fabricated root naming itself, then stake and claim the emission stream.
+    /// It cannot drain the treasury outright, and every root emits a RootPosted
+    /// event, so the damage is rate-limited, visible, and stoppable by the admin
+    /// (set the rate to 0, remove the pool, or withdraw). Treat it as valuable.
+    pub fn set_poster(
+        env: Env,
+        admin: Address,
+        new_poster: Address,
+    ) -> Result<(), ContractError> {
+        Self::require_admin(&env, &admin)?;
+        storage::extend_instance_ttl(&env);
+        let old_poster = storage::get_poster(&env);
+        storage::set_poster(&env, &new_poster);
+
+        events::PosterChanged {
+            old_poster,
+            new_poster,
         }
         .publish(&env);
         Ok(())
@@ -902,6 +952,10 @@ impl LpStakingContract {
         storage::get_operator(&env)
     }
 
+    pub fn get_poster(env: Env) -> Option<Address> {
+        storage::get_poster(&env)
+    }
+
     pub fn get_lmnr_token(env: Env) -> Address {
         storage::get_lmnr_token(&env)
     }
@@ -937,6 +991,23 @@ impl LpStakingContract {
         }
         if let Some(op) = storage::get_operator(env) {
             if *caller == op {
+                return Ok(false);
+            }
+        }
+        Err(ContractError::Unauthorized)
+    }
+
+    /// Returns true if the caller is the admin, false if it is the poster.
+    fn require_poster_or_admin(env: &Env, caller: &Address) -> Result<bool, ContractError> {
+        caller.require_auth();
+        if !storage::has_admin(env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if *caller == storage::get_admin(env) {
+            return Ok(true);
+        }
+        if let Some(p) = storage::get_poster(env) {
+            if *caller == p {
                 return Ok(false);
             }
         }

@@ -29,6 +29,8 @@ pub struct RateChanged {
 pub struct RootPosted {
     #[topic]
     pub pool_index: u32,
+    /// True when the admin posted it rather than the automation key.
+    pub by_admin: bool,
     pub epoch_id: u64,
     pub root: BytesN<32>,
     pub snapshot_ledger: u32,
@@ -109,6 +111,13 @@ pub struct OperatorChanged {
     pub old_operator: Option<Address>,
     #[topic]
     pub new_operator: Address,
+}
+
+#[contractevent]
+pub struct PosterChanged {
+    pub old_poster: Option<Address>,
+    #[topic]
+    pub new_poster: Address,
 }
 
 #[contractevent]
