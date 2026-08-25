@@ -1,7 +1,9 @@
 # lp-staking v2 — Rewrite & Adversarial Review Log
 
-**Status as of 2026-08-24:** v2 rewritten, 61 tests pass, builds `wasm32v1-none` (~36KB).
-NOT yet committed, NOT deployed. Codex peer-review loop in progress (round 4).
+**Status as of 2026-08-24:** v2 COMPLETE and validated. 74 tests pass, builds
+`wasm32v1-none` (~40KB), 7 rounds of adversarial peer review ending in a clean verdict,
+and a full 43-check testnet dry run passing. 11 local commits, NOTHING PUSHED, NOT DEPLOYED.
+Waiting on the dev before the next phase.
 
 ## Decisions locked in
 - **Fresh redeploy**, not upgrade-in-place (zero stakers on v1, so nothing to migrate).
@@ -312,3 +314,49 @@ Negative tests all rejected on-chain: proof replay, operator withdraw, operator
 set_pool_rate, operator stake increase.
 
 Script: `scripts/testnet-dryrun.sh` (repeatable; `FRESH=1` for new keys/contract).
+
+
+## NEXT PHASE — blocked on the dev's reply
+
+### Waiting on the dev
+- [ ] **Public key** from the wallet he'll use (xBull confirmed working for admin + staker
+      flows; Freighter is more future-proof only if delegated auth is ever added).
+- [ ] **Cadence** — frame it as *"how often should users have to re-stake?"*, NOT "how often
+      should the cron run". Every new root freezes existing stakers until they re-prove.
+      Recommend: **weekly roots + daily reconciliation**.
+- [ ] **Admin handoff timing** — he wants it near completion, so the admin UI will be ready
+      and `accept_admin` can be done in our own page (Stellar Lab + xBull is the fallback:
+      `accept_admin` takes ONE address arg, so it is trivial there).
+
+### Then, in order
+1. **Rewrite the admin page for v2.** It is v1-era and calls functions that no longer exist:
+   `set_admin` (now propose/accept), `set_reward_rate` (now per-pool `set_pool_rate`).
+   Changed signatures: `add_pool` (+reward_rate), `update_stake` (caller; operator is
+   decrease-only), `set_merkle_root` (+total_lp). Missing entirely: `accept_admin`,
+   `set_poster`, `set_operator`.
+   Route is `thelumenaire.com/admin` (NOT /staking/admin) and it is currently UNGATED
+   (returns 200) unlike /staking — gate it behind the same env check.
+2. **Rewrite the staking page for v2** — users must RE-PROVE each epoch now (that is the
+   H-1 fix). The UI must make that obvious, and must **check the user has an xLMNR
+   trustline before offering `claim`**, or the transfer fails.
+3. **Cloudflare Worker cron.** ONE keypair holds BOTH poster and operator (same Worker =
+   same trust boundary, so splitting buys no isolation). `wrangler secret put`,
+   `nodejs_compat`, SDK 14.4-15.0, own hashing via `crypto.subtle`, `Uint8Array` at runtime.
+   Reference: `MAHORAGA/sdex-mm/src/trade/sdex-ops.ts`, `LumenBroMobile/x-tip-bot`.
+   **Fund the bot account with 10-20 XLM and MONITOR the balance** — if it runs dry the
+   cron dies silently and stale positions keep earning.
+4. **Bump the verified-build workflow** off `stellar-expert/soroban-build-workflow@v22.8.1`
+   for SDK 27 / `wasm32v1-none`.
+5. **Deploy**: fresh keypairs (admin + bot) in the CLI keychain, deploy with the 4-arg
+   constructor, add the 3 pools, `withdraw` 10,990 xLMNR from v1 -> `fund` v2, run the
+   verified build, then hand off admin.
+
+### Dependencies — already present, bump when touched
+Both repos already have `@creit-tech/stellar-wallets-kit` (pinned `2.0.0-beta.9`; stable is
+**2.0.1**) and `@stellar/stellar-sdk ^14.1.1`. Keep the existing xBull workaround in
+`WalletProvider.tsx`: do NOT pass `networkPassphrase` in xBull sign options (their
+`setHorizonByNetwork()` catch is broken and surfaces a useless `{code:-1}`).
+
+### ⚠️ Sequencing hazard
+The leaf format and `total_lp` semantics changed, so **the live v1 staking page will not
+work against v2**. The updated frontend must ship alongside the new contract.
