@@ -415,7 +415,8 @@ export function createAdminClient(): StakingClient & {
   rawSetMerkleRoot: (
     poolIndex: number,
     root: Buffer,
-    snapshotLedger: number
+    snapshotLedger: number,
+    totalLp: bigint
   ) => Promise<Api.GetSuccessfulTransactionResponse>;
   rawUpdateStake: (
     poolIndex: number,
@@ -504,13 +505,15 @@ export function createAdminClient(): StakingClient & {
   const rawSetMerkleRoot = (
     poolIndex: number,
     root: Buffer,
-    snapshotLedger: number
+    snapshotLedger: number,
+    totalLp: bigint
   ) => {
     return rawInvokeContract(keypair, "set_merkle_root", [
       new Address(keypair.publicKey()).toScVal(), // admin
       nativeToScVal(poolIndex, { type: "u32" }), // pool_index
       xdr.ScVal.scvBytes(root), // root: BytesN<32>
       nativeToScVal(snapshotLedger, { type: "u32" }), // snapshot_ledger
+      nativeToScVal(totalLp, { type: "i128" }), // total_lp (reward denominator)
     ]);
   };
 

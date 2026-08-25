@@ -5,9 +5,15 @@
 
 import { Horizon } from "@stellar/stellar-sdk";
 import { put, list } from "@vercel/blob";
-import { HORIZON_URL } from "./constants";
+import { HORIZON_URL, CONTRACT_ID } from "./constants";
 import { createAdminClient } from "./contract";
-import { buildMerkleTree, computeLeaf } from "./merkle";
+import {
+  assertProofsValid,
+  assertSnapshotInvariants,
+  assertSnapshotLedger,
+  buildMerkleTree,
+  computeLeaf,
+} from "./merkle";
 
 export interface LpHolder {
   address: string;
@@ -61,6 +67,13 @@ export async function snapshotPool(poolId: string): Promise<LpHolder[]> {
   return holders;
 }
 
+/** Current ledger sequence, for snapshot-freshness checks. */
+export async function getCurrentLedger(): Promise<number> {
+  const server = new Horizon.Server(HORIZON_URL);
+  const res = await server.ledgers().order("desc").limit(1).call();
+  return res.records[0].sequence;
+}
+
 /**
  * Build a Merkle tree for a pool snapshot, store proofs in Vercel Blob,
  * and post the root on-chain.
@@ -80,20 +93,46 @@ export async function processPool(snapshot: PoolSnapshot): Promise<{
   // Read current epoch from contract to determine next epoch_id
   const adminClient = createAdminClient();
   let nextEpochId: bigint;
+  let prevSnapshotLedger: number | null = null;
   try {
     const tx = await adminClient.get_merkle_root({ pool_index: poolIndex });
     nextEpochId = BigInt(tx.result.epoch_id) + 1n;
+    prevSnapshotLedger = Number(tx.result.snapshot_ledger);
   } catch {
     nextEpochId = 1n; // First epoch
   }
 
+  // The v2 leaf binds the contract address and the real pool_id, so both must
+  // be read from the chain rather than assumed.
+  const poolIdRes = await adminClient.get_pool_id({ pool_index: poolIndex });
+  const poolId = Buffer.from(poolIdRes.result);
+  const contractId = CONTRACT_ID;
+
+  // total_lp is the epoch's reward DENOMINATOR. Every holder's share is
+  // balance / total_lp, matching the original Python bot's total_shares.
+  const totalLp = holders.reduce((acc, h) => acc + h.balance, 0n);
+
+  // Hard stop before anything is posted: the contract cannot verify that the
+  // leaves sum to total_lp, so a bad snapshot would irreversibly over-emit.
+  assertSnapshotInvariants(
+    holders.map((h) => ({ address: h.address, balance: h.balance })),
+    totalLp,
+    { exhaustive: true }
+  );
+  assertSnapshotLedger(ledger, await getCurrentLedger(), prevSnapshotLedger);
+
   // Compute leaves
   const leaves = holders.map((h) =>
-    computeLeaf(poolIndex, h.address, h.balance, nextEpochId)
+    computeLeaf(contractId, poolIndex, poolId, h.address, h.balance, nextEpochId)
   );
 
   // Build tree
   const tree = buildMerkleTree(leaves);
+
+  // Verify every proof locally BEFORE posting. This is the tripwire for a
+  // leaf-format drift between merkle.ts and merkle.rs — without it, a mismatch
+  // would only surface as every user's stake failing on-chain.
+  assertProofsValid(leaves, tree);
 
   // Store per-user proofs in Vercel Blob
   for (let i = 0; i < holders.length; i++) {
@@ -118,7 +157,7 @@ export async function processPool(snapshot: PoolSnapshot): Promise<{
     `Pool ${poolIndex}: posting root ${rootHex} (epoch ${nextEpochId}, ${holders.length} holders)`
   );
 
-  await adminClient.rawSetMerkleRoot(poolIndex, tree.root, ledger);
+  await adminClient.rawSetMerkleRoot(poolIndex, tree.root, ledger, totalLp);
 
   // Reconcile staker balances via batched router call (one batch per pool)
   const currentBalances = new Map<string, bigint>();
@@ -143,32 +182,34 @@ export async function processPool(snapshot: PoolSnapshot): Promise<{
         // Collect all reconciliation entries for this pool
         const batchEntries: { user: string; newAmount: bigint }[] = [];
 
+        // v2 OPERATOR MODEL: the cron key may only DECREASE an existing
+        // stake. Increases and brand-new positions require the USER to call
+        // stake() with a Merkle proof — that is what stops a compromised cron
+        // key from minting entitlements and draining the reward pool.
+        //
+        // Consequence: a holder who does not re-prove in the new epoch simply
+        // stops earning (their settlement is frozen at their epoch's snapshot).
+        // That is intended, and it is why roots should be posted infrequently.
         for (const prev of prevManifest.holders) {
           const currentBal = currentBalances.get(prev.address);
           const prevBal = BigInt(prev.balance);
 
           if (currentBal === undefined) {
-            console.log(`Pool ${poolIndex}: ${prev.address}: ${prevBal} -> 0 (removed)`);
+            console.log(`Pool ${poolIndex}: ${prev.address}: ${prevBal} -> 0 (exited)`);
             batchEntries.push({ user: prev.address, newAmount: 0n });
-          } else if (currentBal !== prevBal) {
-            console.log(`Pool ${poolIndex}: ${prev.address}: ${prevBal} -> ${currentBal}`);
+          } else if (currentBal < prevBal) {
+            console.log(`Pool ${poolIndex}: ${prev.address}: ${prevBal} -> ${currentBal} (reduced)`);
             batchEntries.push({ user: prev.address, newAmount: currentBal });
           } else {
-            console.log(`Pool ${poolIndex}: ${prev.address}: epoch advance (${prevBal})`);
-            batchEntries.push({ user: prev.address, newAmount: prevBal });
+            // Equal or increased: NOT the operator's to write. The user
+            // re-proves via stake() against the new epoch's root.
+            console.log(
+              `Pool ${poolIndex}: ${prev.address}: ${prevBal} -> ${currentBal} (no-op; user must re-prove)`
+            );
           }
         }
 
-        // New holders not in previous epoch
-        for (const h of holders) {
-          const wasPreviousHolder = prevManifest.holders.some(
-            (p) => p.address === h.address
-          );
-          if (!wasPreviousHolder) {
-            console.log(`Pool ${poolIndex}: new holder ${h.address}: 0 -> ${h.balance}`);
-            batchEntries.push({ user: h.address, newAmount: h.balance });
-          }
-        }
+        // New holders are deliberately NOT seeded here — they must prove.
 
         // Submit in chunks via Stellar Router
         if (batchEntries.length > 0) {

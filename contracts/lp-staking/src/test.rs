@@ -1405,3 +1405,45 @@ fn test_proof_accepted_again_in_next_epoch() {
     c.stake(&user, &0, &bal, &p2[0]);
     assert_eq!(c.get_staker_info(&user, &0).epoch_id, 2);
 }
+
+// ==================== cross-language leaf vectors ====================
+
+/// Prints canonical leaf hashes for the off-chain builder to verify against.
+/// Run: `cargo test print_leaf_vectors -- --nocapture`
+/// Then: `node staking-site/scripts/verify-leaf.mjs <output>`
+///
+/// If merkle.ts and merkle.rs ever drift by one byte, every proof fails
+/// on-chain. This is the tripwire.
+#[test]
+fn test_print_leaf_vectors() {
+    let t = setup_env();
+    let pool_id = make_pool_id(&t.env, 7);
+    let user = Address::generate(&t.env);
+    let balance: i128 = 123_456_789_012;
+    let epoch: u64 = 3;
+    let pool_index: u32 = 2;
+
+    let leaf = t.leaf(pool_index, &pool_id, &user, balance, epoch);
+
+    std::println!("LEAFVEC contract={:?}", t.contract_id);
+    std::println!("LEAFVEC user={:?}", user);
+    std::println!("LEAFVEC pool_id_hex={}", {
+        let mut s = std::string::String::new();
+        let arr = pool_id.to_array();
+        for b in arr.iter() {
+            s.push_str(&std::format!("{:02x}", b));
+        }
+        s
+    });
+    std::println!("LEAFVEC pool_index={}", pool_index);
+    std::println!("LEAFVEC balance={}", balance);
+    std::println!("LEAFVEC epoch={}", epoch);
+    std::println!("LEAFVEC leaf_hex={}", {
+        let mut s = std::string::String::new();
+        let arr = leaf.to_array();
+        for b in arr.iter() {
+            s.push_str(&std::format!("{:02x}", b));
+        }
+        s
+    });
+}
