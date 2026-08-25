@@ -1,70 +1,208 @@
-use soroban_sdk::Env;
+use soroban_sdk::{Env, U256};
 
+use crate::errors::ContractError;
 use crate::storage::{self, PoolState, StakerInfo};
 
 /// Precision multiplier for accumulated reward per share (1e18).
-const PRECISION: i128 = 1_000_000_000_000_000_000;
+pub const PRECISION: i128 = 1_000_000_000_000_000_000;
 
-/// Update the pool's accumulated reward per share to the current time.
-/// Returns the updated PoolState.
-pub fn update_pool(env: &Env, pool_index: u32) -> PoolState {
-    let mut state = storage::get_pool_state(env, pool_index);
+/// Hard ceiling on `acc_reward_per_share`.
+///
+/// Together with MAX_STAKE this keeps `stake * acc / PRECISION` provably inside
+/// i128 forever: 1e21 * 1e35 / 1e18 = 1e38 < i128::MAX (~1.7e38). Accrual stops
+/// at the ceiling instead of erroring, so the pool degrades gracefully rather
+/// than wedging permanently (H-NEW-3) — which matters because there is no
+/// upgrade path.
+pub const MAX_ACC_REWARD_PER_SHARE: i128 = 100_000_000_000_000_000_000_000_000_000_000_000; // 1e35
+
+/// floor(a * b / denom) via a 256-bit intermediate; a,b >= 0, denom > 0.
+pub fn mul_div_floor(env: &Env, a: i128, b: i128, denom: i128) -> Result<i128, ContractError> {
+    if a < 0 || b < 0 || denom <= 0 {
+        return Err(ContractError::MathOverflow);
+    }
+    if a == 0 || b == 0 {
+        return Ok(0);
+    }
+    let prod = U256::from_u128(env, a as u128)
+        .checked_mul(&U256::from_u128(env, b as u128))
+        .ok_or(ContractError::MathOverflow)?;
+    let quot = prod
+        .checked_div(&U256::from_u128(env, denom as u128))
+        .ok_or(ContractError::MathOverflow)?;
+    let out = quot.to_u128().ok_or(ContractError::MathOverflow)?;
+    if out > i128::MAX as u128 {
+        return Err(ContractError::MathOverflow);
+    }
+    Ok(out as i128)
+}
+
+/// Compute `(quotient, remainder)` of `(elapsed * rate * PRECISION + carry) / denom`
+/// entirely in 256-bit space. The remainder is carried into the next update so
+/// flooring cannot silently destroy emission across many small updates (M-NEW-2).
+///
+/// Returns `None` for the quotient when it would exceed i128, letting the caller
+/// clamp to the accumulator ceiling rather than fail.
+fn accrue(
+    env: &Env,
+    elapsed: i128,
+    rate: i128,
+    carry: i128,
+    denom: i128,
+) -> Result<(Option<i128>, i128), ContractError> {
+    if elapsed <= 0 || rate <= 0 || denom <= 0 || carry < 0 {
+        return Err(ContractError::MathOverflow);
+    }
+    let numer = U256::from_u128(env, elapsed as u128)
+        .checked_mul(&U256::from_u128(env, rate as u128))
+        .ok_or(ContractError::MathOverflow)?
+        .checked_mul(&U256::from_u128(env, PRECISION as u128))
+        .ok_or(ContractError::MathOverflow)?
+        .checked_add(&U256::from_u128(env, carry as u128))
+        .ok_or(ContractError::MathOverflow)?;
+
+    let d = U256::from_u128(env, denom as u128);
+    let quot = numer.checked_div(&d).ok_or(ContractError::MathOverflow)?;
+    let rem = numer
+        .checked_rem_euclid(&d)
+        .ok_or(ContractError::MathOverflow)?;
+
+    let rem_i = rem.to_u128().ok_or(ContractError::MathOverflow)? as i128;
+    let quot_i = match quot.to_u128() {
+        Some(q) if q <= i128::MAX as u128 => Some(q as i128),
+        _ => None,
+    };
+    Ok((quot_i, rem_i))
+}
+
+/// Advance the pool's accumulator to the current ledger time and persist it.
+///
+/// The denominator is the CURRENT EPOCH'S authenticated `total_lp` from the
+/// posted Merkle root — not `total_staked`. That is what stops stale positions
+/// from diluting active stakers (H-NEW-2) and makes a staker's share exactly
+/// `their_lp / total_lp`, matching the original Python bot.
+///
+/// Inactive pools do not accrue, and with no root posted there is no
+/// denominator, so no accrual happens until the first epoch begins.
+pub fn update_pool(env: &Env, pool_index: u32) -> Result<PoolState, ContractError> {
+    let mut state = storage::get_pool_state(env, pool_index)?;
     let now = env.ledger().timestamp();
-    let reward_rate = storage::get_reward_rate(env);
 
-    if now > state.last_reward_time && state.total_staked > 0 && reward_rate > 0 {
+    if !state.active || now <= state.last_reward_time || state.reward_rate <= 0 {
+        state.last_reward_time = now;
+        storage::set_pool_state(env, pool_index, &state);
+        return Ok(state);
+    }
+
+    let total_lp = current_total_lp(env, pool_index);
+    if total_lp > 0 && state.acc_reward_per_share < MAX_ACC_REWARD_PER_SHARE {
         let elapsed = (now - state.last_reward_time) as i128;
-        let new_rewards = elapsed * reward_rate;
-        state.acc_reward_per_share += (new_rewards * PRECISION) / state.total_staked;
+        let (quot, rem) = accrue(
+            env,
+            elapsed,
+            state.reward_rate,
+            state.reward_remainder,
+            total_lp,
+        )?;
+        match quot {
+            Some(delta) => {
+                let next = state
+                    .acc_reward_per_share
+                    .checked_add(delta)
+                    .unwrap_or(MAX_ACC_REWARD_PER_SHARE);
+                if next >= MAX_ACC_REWARD_PER_SHARE {
+                    state.acc_reward_per_share = MAX_ACC_REWARD_PER_SHARE;
+                    state.reward_remainder = 0;
+                } else {
+                    state.acc_reward_per_share = next;
+                    state.reward_remainder = rem;
+                }
+            }
+            None => {
+                // Quotient beyond i128: clamp rather than wedge.
+                state.acc_reward_per_share = MAX_ACC_REWARD_PER_SHARE;
+                state.reward_remainder = 0;
+            }
+        }
     }
 
     state.last_reward_time = now;
     storage::set_pool_state(env, pool_index, &state);
-    state
+    Ok(state)
 }
 
-/// Calculate pending rewards for a staker based on the current pool state.
-/// Does NOT update pool state — caller must call update_pool first.
-pub fn calculate_pending(pool_state: &PoolState, staker: &StakerInfo) -> i128 {
+/// The current epoch's reward denominator, or 0 when no root has been posted.
+pub fn current_total_lp(env: &Env, pool_index: u32) -> i128 {
+    if storage::has_merkle_root(env, pool_index) {
+        storage::get_merkle_root(env, pool_index).total_lp
+    } else {
+        0
+    }
+}
+
+/// Pending rewards settled against a CALLER-SUPPLIED accumulator.
+///
+/// The caller picks the accumulator: live for a current-epoch staker, or the
+/// frozen `EpochEndAcc` snapshot for their own epoch if stale (H-1).
+pub fn calculate_pending(
+    env: &Env,
+    acc_reward_per_share: i128,
+    staker: &StakerInfo,
+) -> Result<i128, ContractError> {
     if staker.staked_amount == 0 {
-        return staker.pending_rewards;
+        return Ok(staker.pending_rewards);
     }
 
-    let accumulated = (staker.staked_amount * pool_state.acc_reward_per_share) / PRECISION;
-    let pending = accumulated - staker.reward_debt;
-    staker.pending_rewards + pending
+    let accumulated = mul_div_floor(env, staker.staked_amount, acc_reward_per_share, PRECISION)?;
+    // Debt can exceed accumulated only via boundary rounding; never negative.
+    let delta = if accumulated > staker.reward_debt {
+        accumulated - staker.reward_debt
+    } else {
+        0
+    };
+
+    staker
+        .pending_rewards
+        .checked_add(delta)
+        .ok_or(ContractError::MathOverflow)
 }
 
-/// View-only: simulate the accumulated reward per share at the current time
-/// without writing to storage. Used for pending_reward queries.
-pub fn simulate_acc_reward(env: &Env, pool_index: u32) -> i128 {
-    let state = storage::get_pool_state(env, pool_index);
+/// Reward debt for a given stake at a given accumulator.
+pub fn compute_reward_debt(
+    env: &Env,
+    staked_amount: i128,
+    acc_reward_per_share: i128,
+) -> Result<i128, ContractError> {
+    mul_div_floor(env, staked_amount, acc_reward_per_share, PRECISION)
+}
+
+/// View-only: accumulator projected to now without writing storage.
+pub fn simulate_acc_reward(env: &Env, pool_index: u32) -> Result<i128, ContractError> {
+    let state = storage::get_pool_state(env, pool_index)?;
     let now = env.ledger().timestamp();
-    let reward_rate = storage::get_reward_rate(env);
 
-    let mut acc = state.acc_reward_per_share;
-    if now > state.last_reward_time && state.total_staked > 0 && reward_rate > 0 {
-        let elapsed = (now - state.last_reward_time) as i128;
-        let new_rewards = elapsed * reward_rate;
-        acc += (new_rewards * PRECISION) / state.total_staked;
-    }
-    acc
-}
-
-/// Calculate pending rewards for a stale staker using the previous epoch's accumulator snapshot.
-/// Stale stakers earned rewards up to the epoch change but not after.
-pub fn calculate_pending_stale(pool_state: &PoolState, staker: &StakerInfo) -> i128 {
-    if staker.staked_amount == 0 {
-        return staker.pending_rewards;
+    if !state.active || now <= state.last_reward_time || state.reward_rate <= 0 {
+        return Ok(state.acc_reward_per_share);
     }
 
-    let accumulated =
-        (staker.staked_amount * pool_state.prev_acc_reward_per_share) / PRECISION;
-    let pending = accumulated - staker.reward_debt;
-    staker.pending_rewards + pending
-}
+    let total_lp = current_total_lp(env, pool_index);
+    if total_lp <= 0 || state.acc_reward_per_share >= MAX_ACC_REWARD_PER_SHARE {
+        return Ok(state.acc_reward_per_share);
+    }
 
-/// Compute the reward_debt for a staker given their staked amount and current accumulator.
-pub fn compute_reward_debt(staked_amount: i128, acc_reward_per_share: i128) -> i128 {
-    (staked_amount * acc_reward_per_share) / PRECISION
+    let elapsed = (now - state.last_reward_time) as i128;
+    let (quot, _) = accrue(
+        env,
+        elapsed,
+        state.reward_rate,
+        state.reward_remainder,
+        total_lp,
+    )?;
+    Ok(match quot {
+        Some(delta) => state
+            .acc_reward_per_share
+            .checked_add(delta)
+            .unwrap_or(MAX_ACC_REWARD_PER_SHARE)
+            .min(MAX_ACC_REWARD_PER_SHARE),
+        None => MAX_ACC_REWARD_PER_SHARE,
+    })
 }

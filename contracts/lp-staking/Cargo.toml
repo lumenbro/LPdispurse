@@ -1,16 +1,19 @@
 [package]
 name = "lp-staking"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib"]
 
+# Pinned EXACTLY for reproducible / verifiable builds. Do not relax to a caret
+# range: a caret range let v1 drift from 22.0.0 to 22.0.9 and made the on-chain
+# WASM hash unreproducible. Bump deliberately, commit Cargo.lock, build --locked.
 [dependencies]
-soroban-sdk = "22.0.0"
+soroban-sdk = "=27.0.6"
 
 [dev-dependencies]
-soroban-sdk = { version = "22.0.0", features = ["testutils"] }
+soroban-sdk = { version = "=27.0.6", features = ["testutils"] }
 
 [profile.release]
 opt-level = "z"
