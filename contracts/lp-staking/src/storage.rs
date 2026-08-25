@@ -65,6 +65,15 @@ pub struct PoolState {
     /// Undistributed numerator carried between updates so repeated small
     /// updates cannot silently discard emission to flooring (M-NEW-2).
     pub reward_remainder: i128,
+    /// Sum of stakes PROVEN IN THE CURRENT EPOCH. Reset at every new root.
+    ///
+    /// The accumulator divides by `total_lp`, so a staker holding `s` earns
+    /// `s/total_lp` of the emission. Without capping the aggregate, a fabricated
+    /// root could name N addresses each at `total_lp` — every one individually
+    /// passing `lp_balance <= total_lp` — and each would earn a FULL emission
+    /// stream, for N x the configured rate from a single root. This field
+    /// enforces `sum(current-epoch stakes) <= total_lp` on-chain.
+    pub epoch_staked: i128,
     /// False once remove_pool is called: no new stakes/roots, no accrual.
     /// Existing stakers can still claim and unstake.
     pub active: bool,

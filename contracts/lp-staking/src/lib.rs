@@ -114,6 +114,7 @@ impl LpStakingContract {
                 last_reward_time: env.ledger().timestamp(),
                 reward_rate,
                 reward_remainder: 0,
+                epoch_staked: 0,
                 active: true,
             },
         );
@@ -246,10 +247,11 @@ impl LpStakingContract {
         // reward stroops (< ~1000 stroops at the maximum total_lp) — small, but
         // it accumulates linearly with root cadence, so keep roots infrequent
         // and track the cumulative dust budget off-chain.
-        if state.reward_remainder != 0 {
-            state.reward_remainder = 0;
-            storage::set_pool_state(&env, pool_index, &state);
-        }
+        // A new epoch resets both the carried remainder and the per-epoch
+        // aggregate stake cap.
+        state.reward_remainder = 0;
+        state.epoch_staked = 0;
+        storage::set_pool_state(&env, pool_index, &state);
 
         let epoch_id = ending_epoch + 1;
         storage::set_merkle_root(
@@ -444,6 +446,10 @@ impl LpStakingContract {
             if state.total_staked < 0 {
                 state.total_staked = 0;
             }
+            state.epoch_staked = state.epoch_staked.saturating_sub(staker.staked_amount);
+            if state.epoch_staked < 0 {
+                state.epoch_staked = 0;
+            }
             storage::set_pool_state(&env, pool_index, &state);
         }
 
@@ -570,6 +576,23 @@ impl LpStakingContract {
             if updated.total_staked < 0 {
                 return Err(ContractError::MathOverflow);
             }
+
+            // Track the epoch aggregate across whichever epoch the record moves
+            // between: subtract it if it was counted, add it if it now counts.
+            let was_current = staker.epoch_id == current_epoch_id;
+            let will_be_current = record_epoch == current_epoch_id;
+            let mut agg = updated.epoch_staked;
+            if was_current {
+                agg = agg.saturating_sub(old_amount);
+            }
+            if will_be_current {
+                agg = agg.checked_add(new_amount).ok_or(ContractError::MathOverflow)?;
+                let cap = rewards::current_total_lp(&env, pool_index);
+                if cap > 0 && agg > cap {
+                    return Err(ContractError::EpochStakeExceeded);
+                }
+            }
+            updated.epoch_staked = if agg < 0 { 0 } else { agg };
             storage::set_pool_state(&env, pool_index, &updated);
 
             events::StakeUpdated {
@@ -728,6 +751,18 @@ impl LpStakingContract {
         if updated.total_staked < 0 {
             return Err(ContractError::MathOverflow);
         }
+
+        // Cap aggregate proven stake for this epoch at total_lp. A staker may
+        // only prove once per epoch (LastProvenEpoch), so this is a pure add.
+        // Without it, a fabricated root naming N addresses at total_lp each
+        // would pay N full emission streams.
+        updated.epoch_staked = updated
+            .epoch_staked
+            .checked_add(lp_balance)
+            .ok_or(ContractError::MathOverflow)?;
+        if updated.epoch_staked > merkle_data.total_lp {
+            return Err(ContractError::EpochStakeExceeded);
+        }
         storage::set_pool_state(&env, pool_index, &updated);
         storage::set_last_proven_epoch(&env, &user, pool_index, merkle_data.epoch_id);
 
@@ -840,6 +875,13 @@ impl LpStakingContract {
             if updated.total_staked < 0 {
                 return Err(ContractError::MathOverflow);
             }
+            if staker.epoch_id == Self::current_epoch_id(&env, pool_index) {
+                updated.epoch_staked =
+                    updated.epoch_staked.saturating_sub(staker.staked_amount);
+                if updated.epoch_staked < 0 {
+                    updated.epoch_staked = 0;
+                }
+            }
             storage::set_pool_state(&env, pool_index, &updated);
         }
 
@@ -931,6 +973,11 @@ impl LpStakingContract {
     /// cached total maintained incrementally, so this never loops (L-NEW-4).
     pub fn total_emission_rate(env: Env) -> i128 {
         storage::get_total_emission_rate(&env)
+    }
+
+    /// Aggregate stake proven in the current epoch. Always <= total_lp.
+    pub fn get_epoch_staked(env: Env, pool_index: u32) -> Result<i128, ContractError> {
+        Ok(storage::get_pool_state(&env, pool_index)?.epoch_staked)
     }
 
     /// The current epoch's reward denominator for a pool (0 before the first root).

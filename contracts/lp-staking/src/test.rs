@@ -1550,3 +1550,127 @@ fn test_admin_can_rotate_poster() {
         .try_set_merkle_root(&t.poster, &0, &root, &101, &lp)
         .is_err());
 }
+
+// ==================== Sybil cap (round-5 blocker) ====================
+
+/// A fabricated root naming N addresses EACH at `total_lp` must not pay N full
+/// emission streams. Each leaf individually satisfies `lp_balance <= total_lp`,
+/// so the only thing stopping it is the aggregate epoch cap.
+#[test]
+fn test_sybil_root_cannot_multiply_emissions() {
+    let t = setup_env();
+    let c = t.client();
+    t.fund_contract(1_000_000_000_000_000);
+    let pool_id = make_pool_id(&t.env, 1);
+    c.add_pool(&t.admin, &pool_id, &RATE);
+
+    let total_lp = 10_000 * MIN_STAKE;
+    let a1 = Address::generate(&t.env);
+    let a2 = Address::generate(&t.env);
+    let a3 = Address::generate(&t.env);
+
+    // Malicious root: three identities, each claiming the WHOLE pool.
+    let leaves = [
+        t.leaf(0, &pool_id, &a1, total_lp, 1),
+        t.leaf(0, &pool_id, &a2, total_lp, 1),
+        t.leaf(0, &pool_id, &a3, total_lp, 1),
+    ];
+    let (root, proofs) = build_tree(&t, &leaves);
+    c.set_merkle_root(&t.poster, &0, &root, &100, &total_lp);
+
+    // The first identity consumes the entire epoch allowance.
+    c.stake(&a1, &0, &total_lp, &proofs[0]);
+    assert_eq!(c.get_epoch_staked(&0), total_lp);
+
+    // The rest must be refused — this is the N-x emission bug.
+    assert!(
+        c.try_stake(&a2, &0, &total_lp, &proofs[1]).is_err(),
+        "second Sybil identity was accepted: emissions can be multiplied"
+    );
+    assert!(c.try_stake(&a3, &0, &total_lp, &proofs[2]).is_err());
+
+    // Total payout stays at ONE emission stream.
+    t.advance_to(2000);
+    let total_pending = c.pending_reward(&a1, &0);
+    assert_eq!(total_pending, RATE * 1000);
+}
+
+/// Honest oversubscription is refused too: the sum of proven stakes can never
+/// exceed the declared denominator.
+#[test]
+fn test_aggregate_stake_capped_at_total_lp() {
+    let t = setup_env();
+    let c = t.client();
+    let pool_id = make_pool_id(&t.env, 1);
+    c.add_pool(&t.admin, &pool_id, &RATE);
+
+    let total_lp = 10_000 * MIN_STAKE;
+    let u1 = Address::generate(&t.env);
+    let u2 = Address::generate(&t.env);
+    let big = total_lp - MIN_STAKE;
+
+    let leaves = [
+        t.leaf(0, &pool_id, &u1, big, 1),
+        t.leaf(0, &pool_id, &u2, big, 1),
+    ];
+    let (root, proofs) = build_tree(&t, &leaves);
+    c.set_merkle_root(&t.poster, &0, &root, &100, &total_lp);
+
+    c.stake(&u1, &0, &big, &proofs[0]);
+    assert!(c.try_stake(&u2, &0, &big, &proofs[1]).is_err());
+    assert!(c.get_epoch_staked(&0) <= total_lp);
+}
+
+/// The cap resets each epoch, so legitimate stakers are never locked out.
+#[test]
+fn test_epoch_stake_cap_resets_each_epoch() {
+    let t = setup_env();
+    let c = t.client();
+    let pool_id = make_pool_id(&t.env, 1);
+    c.add_pool(&t.admin, &pool_id, &RATE);
+    let lp = 10_000 * MIN_STAKE;
+
+    let u = Address::generate(&t.env);
+    let l1 = t.leaf(0, &pool_id, &u, lp, 1);
+    let (r1, p1) = build_tree(&t, &[l1]);
+    c.set_merkle_root(&t.poster, &0, &r1, &100, &lp);
+    c.stake(&u, &0, &lp, &p1[0]);
+    assert_eq!(c.get_epoch_staked(&0), lp);
+
+    t.advance_to(1000 + crate::MIN_ROOT_INTERVAL + 1);
+    let l2 = t.leaf(0, &pool_id, &u, lp, 2);
+    let (r2, p2) = build_tree(&t, &[l2]);
+    c.set_merkle_root(&t.poster, &0, &r2, &101, &lp);
+    assert_eq!(c.get_epoch_staked(&0), 0, "cap must reset on a new epoch");
+
+    c.stake(&u, &0, &lp, &p2[0]);
+    assert_eq!(c.get_epoch_staked(&0), lp);
+}
+
+/// Unstaking releases the epoch allowance so the freed room is reusable.
+#[test]
+fn test_unstake_releases_epoch_allowance() {
+    let t = setup_env();
+    let c = t.client();
+    let pool_id = make_pool_id(&t.env, 1);
+    c.add_pool(&t.admin, &pool_id, &RATE);
+
+    let total_lp = 10_000 * MIN_STAKE;
+    let u1 = Address::generate(&t.env);
+    let u2 = Address::generate(&t.env);
+    let half = total_lp / 2;
+
+    let leaves = [
+        t.leaf(0, &pool_id, &u1, half, 1),
+        t.leaf(0, &pool_id, &u2, half, 1),
+    ];
+    let (root, proofs) = build_tree(&t, &leaves);
+    c.set_merkle_root(&t.poster, &0, &root, &100, &total_lp);
+
+    c.stake(&u1, &0, &half, &proofs[0]);
+    c.stake(&u2, &0, &half, &proofs[1]);
+    assert_eq!(c.get_epoch_staked(&0), total_lp);
+
+    c.unstake(&u1, &0);
+    assert_eq!(c.get_epoch_staked(&0), half, "allowance not released on unstake");
+}

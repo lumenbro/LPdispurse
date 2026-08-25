@@ -53,4 +53,6 @@ pub enum ContractError {
     OperatorCannotIncrease = 27,
     /// Poster tried to post a root before MIN_ROOT_INTERVAL elapsed.
     RootTooSoon = 28,
+    /// Aggregate proven stake for the epoch would exceed total_lp.
+    EpochStakeExceeded = 29,
 }
