@@ -13,7 +13,7 @@ crons = ["0 * * * *"]
 #   wrangler kv namespace create LEDGER
 [[kv_namespaces]]
 binding = "LEDGER"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "2a5c9e6c23284f4ea8c1124d5544e91f"
 
 [observability]
 enabled = true

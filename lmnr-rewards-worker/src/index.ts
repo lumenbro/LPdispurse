@@ -71,9 +71,13 @@ async function runPool(
     // Not on chain -- safe to retry below.
   }
 
+  const dry = isDryRun(env);
+
   const holders = await getPoolHolders(env, poolId);
   if (holders.length === 0) {
-    await skip(env, key, "no holders");
+    // Never write the ledger during a dry run: marking the period "handled"
+    // would make the real run skip it.
+    if (!dry) await skip(env, key, "no holders");
     return { pool: short, holders: 0, paid: "0", recipients: 0, status: "no-holders" };
   }
 
@@ -85,7 +89,7 @@ async function runPool(
   );
 
   if (payouts.length === 0) {
-    await skip(env, key, "no eligible payouts");
+    if (!dry) await skip(env, key, "no eligible payouts");
     return {
       pool: short,
       holders: holders.length,
@@ -100,7 +104,7 @@ async function runPool(
 
   const total = payouts.reduce((a, p) => a + p.stroops, 0n);
 
-  if (isDryRun(env)) {
+  if (dry) {
     console.log(
       `[DRY RUN] pool ${short}: would pay ${fromStroops(total)} ` +
         `${env.REWARD_ASSET_CODE} to ${payouts.length} holders ` +
