@@ -5,6 +5,11 @@ compatibility_date = "2024-12-01"
 # this account (MAHORAGA/sdex-mm, LumenBroMobile/x-tip-bot).
 compatibility_flags = ["nodejs_compat"]
 
+# Preview URLs are a SECOND publicly-routable host for this Worker. The admin
+# page sets spending, so don't leave an extra door open -- Cloudflare Access
+# scoped to the Worker covers both, but disabling previews removes the surface.
+preview_urls = false
+
 # Hourly. Change to "0 0 * * *" for daily.
 [triggers]
 crons = ["0 * * * *"]
