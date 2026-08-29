@@ -1,0 +1,103 @@
+import {
+  Asset,
+  BASE_FEE,
+  Horizon,
+  Keypair,
+  Networks,
+  Operation,
+  TransactionBuilder,
+} from "@stellar/stellar-sdk";
+import { MAX_OPS_PER_TX, fromStroops, toStroops, type Env } from "./config";
+import type { LpHolder } from "./horizon";
+
+export interface Payout {
+  address: string;
+  stroops: bigint;
+}
+
+/**
+ * Pro-rata split of one period's budget across holders, by LP share.
+ *
+ * Mirrors the Python bot's `percent = balance / total_shares`, but in integer
+ * stroops so there is no float drift. Division truncates, so the sum of payouts
+ * is always <= the budget: dust stays in the wallet rather than over-paying.
+ */
+export function computePayouts(
+  holders: LpHolder[],
+  budgetStroops: bigint,
+  minPayoutStroops: bigint
+): { payouts: Payout[]; skippedNoTrustline: string[]; dust: bigint } {
+  const eligible = holders.filter((h) => h.hasTrustline && h.shares > 0n);
+  const skippedNoTrustline = holders
+    .filter((h) => !h.hasTrustline && h.shares > 0n)
+    .map((h) => h.address);
+
+  // Holders without a trustline are excluded from the denominator too, so the
+  // remaining LPs share the full budget rather than silently burning a slice.
+  const total = eligible.reduce((a, h) => a + h.shares, 0n);
+  if (total === 0n) {
+    return { payouts: [], skippedNoTrustline, dust: budgetStroops };
+  }
+
+  const payouts: Payout[] = [];
+  let allocated = 0n;
+  for (const h of eligible) {
+    const amount = (budgetStroops * h.shares) / total; // truncating
+    if (amount >= minPayoutStroops) {
+      payouts.push({ address: h.address, stroops: amount });
+      allocated += amount;
+    }
+  }
+  return { payouts, skippedNoTrustline, dust: budgetStroops - allocated };
+}
+
+export function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/**
+ * Build ONE signed transaction paying every payout in the batch.
+ * Returns the built tx so the caller can record its hash BEFORE submitting.
+ */
+export async function buildPaymentTx(
+  env: Env,
+  keypair: Keypair,
+  batch: Payout[]
+) {
+  if (batch.length > MAX_OPS_PER_TX) {
+    throw new Error(`batch of ${batch.length} exceeds ${MAX_OPS_PER_TX} ops`);
+  }
+  const server = new Horizon.Server(env.HORIZON_URL);
+  const account = await server.loadAccount(keypair.publicKey());
+  const asset = new Asset(env.REWARD_ASSET_CODE, env.REWARD_ASSET_ISSUER);
+  const passphrase =
+    env.NETWORK === "public" ? Networks.PUBLIC : Networks.TESTNET;
+
+  // Fee is per-operation; pay a healthy multiple of base so a busy ledger
+  // doesn't strand the run.
+  const fee = String(BigInt(BASE_FEE) * BigInt(Math.max(batch.length, 1)) * 10n);
+
+  let builder = new TransactionBuilder(account, {
+    fee,
+    networkPassphrase: passphrase,
+  });
+  for (const p of batch) {
+    builder = builder.addOperation(
+      Operation.payment({
+        destination: p.address,
+        asset,
+        amount: fromStroops(p.stroops),
+      })
+    );
+  }
+  const tx = builder.setTimeout(120).build();
+  tx.sign(keypair);
+  return { tx, server };
+}
+
+export function budgetForPeriod(env: Env, hourly: boolean): bigint {
+  const daily = toStroops(env.DAILY_REWARD_PER_POOL);
+  return hourly ? daily / 24n : daily;
+}
