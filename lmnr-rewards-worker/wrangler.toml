@@ -29,6 +29,8 @@ DAILY_REWARD_PER_POOL = "4000"
 MIN_PAYOUT = "0.001"
 # SAFETY: starts as a dry run. Set to "false" only when you have verified a run.
 DRY_RUN = "true"
+# Emails allowed through Cloudflare Access (comma separated).
+ADMIN_EMAILS = "bpeterscqa@gmail.com"
 # Comma-separated liquidity pool IDs.
 # Verified live pool IDs (holders as of 2026-08-28):
 #   8b090132.. native/xLMNR  8 holders

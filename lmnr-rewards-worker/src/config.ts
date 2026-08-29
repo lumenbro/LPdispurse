@@ -10,6 +10,10 @@ export interface Env {
   POOL_IDS: string;
   /** Set with: wrangler secret put DISBURSER_SECRET */
   DISBURSER_SECRET?: string;
+  /** Comma-separated emails allowed through Cloudflare Access. */
+  ADMIN_EMAILS?: string;
+  /** Fallback bearer token if Cloudflare Access is not in front yet. */
+  ADMIN_TOKEN?: string;
 }
 
 /** Stroops per whole token (7 decimals). */

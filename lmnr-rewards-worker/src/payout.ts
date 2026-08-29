@@ -3,6 +3,7 @@ import {
   BASE_FEE,
   Horizon,
   Keypair,
+  Memo,
   Networks,
   Operation,
   TransactionBuilder,
@@ -64,14 +65,18 @@ export function chunk<T>(items: T[], size: number): T[][] {
 export async function buildPaymentTx(
   env: Env,
   keypair: Keypair,
-  batch: Payout[]
+  batch: Payout[],
+  rewardAsset?: { code: string; issuer: string },
+  memo?: string
 ) {
   if (batch.length > MAX_OPS_PER_TX) {
     throw new Error(`batch of ${batch.length} exceeds ${MAX_OPS_PER_TX} ops`);
   }
   const server = new Horizon.Server(env.HORIZON_URL);
   const account = await server.loadAccount(keypair.publicKey());
-  const asset = new Asset(env.REWARD_ASSET_CODE, env.REWARD_ASSET_ISSUER);
+  const code = rewardAsset?.code ?? env.REWARD_ASSET_CODE;
+  const issuer = rewardAsset?.issuer ?? env.REWARD_ASSET_ISSUER;
+  const asset = code ? new Asset(code, issuer) : Asset.native();
   const passphrase =
     env.NETWORK === "public" ? Networks.PUBLIC : Networks.TESTNET;
 
@@ -92,6 +97,7 @@ export async function buildPaymentTx(
       })
     );
   }
+  if (memo) builder = builder.addMemo(Memo.text(memo.slice(0, 28)));
   const tx = builder.setTimeout(120).build();
   tx.sign(keypair);
   return { tx, server };

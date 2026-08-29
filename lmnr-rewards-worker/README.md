@@ -81,3 +81,48 @@ negligible (a 15-op transaction is ~0.00015 XLM).
 
 This **pushes** rewards; `contracts/lp-staking` has users **claim** them. They are two
 designs for the same job — running both against the same pools pays twice.
+
+## Admin UI
+
+`https://lmnr-rewards.<subdomain>.workers.dev/admin`
+
+- **Disbursement wallet card** — address (copy button), balances, burn/day, and
+  **runway in days** for both the reward asset and XLM fees, with a suggested
+  30-day top-up. Runway is the number that matters: when either hits zero the
+  cron fails quietly.
+- **Reward instances** — one row per pool+asset, each with its own daily amount,
+  minimum payment, memo, and an on/off toggle. A pool can appear more than once
+  to pay multiple assets.
+- **On-chain pool discovery** — every liquidity pool containing the reward asset,
+  read live from Horizon, with holder counts. Tick one to add it; no pool IDs to
+  type. New pools are added **disabled with amount 0** so nothing starts paying
+  by accident.
+- **Payout preview** — exactly what the next run would pay, per recipient, with
+  LP shares. Sends nothing.
+
+Config lives in KV, so changes take effect on the next run with **no redeploy**.
+
+### Auth — required, because this page sets spending
+
+Whoever can set a reward amount can drain the wallet in one run, so the page is
+never open.
+
+**Recommended: Cloudflare Access** in front of `/admin` and `/api/*`. Access
+handles the login and injects `Cf-Access-Authenticated-User-Email`, which is
+checked against `ADMIN_EMAILS` in `wrangler.toml`. No shared secret, and each
+person logs in as themselves.
+
+  Zero Trust -> Access -> Applications -> Add self-hosted
+    domain: lmnr-rewards.<subdomain>.workers.dev
+    paths:  /admin, /api
+    policy: Allow -> Emails -> your address + the dev's
+
+**Fallback until Access is set up:** an `ADMIN_TOKEN` secret sent as
+`Authorization: Bearer <token>`. Already configured. Rotate with
+`wrangler secret put ADMIN_TOKEN`.
+
+### Guard rails
+- `MAX_DAILY_REWARD` (100,000/pool/day) is enforced in code, so even a
+  compromised session cannot set an absurd rate.
+- Amounts, memo length, duplicate pool+asset pairs and malformed pool IDs are
+  all validated server-side before anything is stored.
