@@ -33,7 +33,7 @@ DAILY_REWARD_PER_POOL = "4000"
 # Skip payouts below this (whole tokens) so dust doesn't waste an operation.
 MIN_PAYOUT = "0.001"
 # SAFETY: starts as a dry run. Set to "false" only when you have verified a run.
-DRY_RUN = "true"
+DRY_RUN = "false"
 # Emails allowed through Cloudflare Access (comma separated).
 ADMIN_EMAILS = "bpeterscqa@gmail.com,lmnr013@gmail.com"
 # Comma-separated liquidity pool IDs.

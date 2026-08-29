@@ -126,3 +126,25 @@ person logs in as themselves.
   compromised session cannot set an absurd rate.
 - Amounts, memo length, duplicate pool+asset pairs and malformed pool IDs are
   all validated server-side before anything is stored.
+
+## First live run — verified 2026-08-29
+
+Tx `e9e29e8f9b64e53b918c8988002c8ff813886a59dbb9dd623b28b47253137591`
+(ledger 64173392, mainnet).
+
+- 8 payments in ONE transaction, successful
+- fee 0.00008 XLM total
+- memo `xLMNR LP reward` attached
+- paid 9.9999996 of a 10.0 budget — the 4-stroop shortfall is the intended
+  truncating division, which guarantees the bot can never over-pay
+- amounts matched on-chain LP shares (82.2% holder -> 8.2229, 0.095% -> 0.0095)
+- KV ledger recorded `{status:"done", txHash, paid}` for the period
+
+Everything that dry runs cannot exercise — transaction assembly, signing inside
+the Worker isolate, memo, Horizon submission — worked on the first attempt.
+
+### Ledger keys are per PERIOD, not per run
+`payout:<pool>:<YYYY-MM-DDTHH>` for hourly (`YYYY-MM-DD` for daily). Re-running
+inside the same hour is refused as `already-handled`; the next hour is a new
+period and legitimately pays again. That is the intended behaviour, and it is
+what makes a retried or duplicated cron invocation safe.
