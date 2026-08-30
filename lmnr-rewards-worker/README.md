@@ -148,3 +148,21 @@ the Worker isolate, memo, Horizon submission — worked on the first attempt.
 inside the same hour is refused as `already-handled`; the next hour is a new
 period and legitimately pays again. That is the intended behaviour, and it is
 what makes a retried or duplicated cron invocation safe.
+
+## Federated address
+
+The disbursement wallet resolves as **`rewards*thelumenaire.com`**
+(also `xlmnr-rewards`, `lp-rewards`, `reward-stream`).
+
+Three pieces have to line up:
+1. `home_domain` on the wallet -> `www.thelumenaire.com`
+2. that site's stellar.toml -> `FEDERATION_SERVER="https://federation.lumenbro.com"`
+3. the `lmnr-federation` Worker resolving the name
+
+**Federation is sender-side only.** It lets someone TYPE the name when paying you;
+it does NOT attach your name to payments you send. The recipient's wallet shows
+the raw sender address — the same is true of any `*lobstr.co` address. It is also
+not asset-specific.
+
+So the thing LPs actually see on a reward payment is the **memo**, set per pool in
+the dashboard. Keep it meaningful (e.g. `xLMNR LP Rewards`).
