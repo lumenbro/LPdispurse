@@ -6,13 +6,27 @@ mechanism behind `name*lobstr.co`.
 
 Live: https://lmnr-federation.bpeterscqa.workers.dev
 
+**Use a custom domain in the published toml, not the workers.dev URL** — the
+workers.dev subdomain is derived from the account email, and the toml is public.
+`lumenbro.com` is already on Cloudflare DNS, so attaching
+`federation.lumenbro.com` is a single dashboard step (Workers & Pages ->
+lmnr-federation -> Domains & Routes -> Add -> Custom Domain).
+
+`thelumenaire.com` would read better still, but its DNS is at GoDaddy and the
+dev controls it; that needs a CNAME from him. The Worker answers on any hostname
+routed to it, so both can coexist.
+
+Do NOT change the account-wide workers.dev subdomain to solve this: it would
+also rename `lmnr-rewards.bpeterscqa.workers.dev` and break the Cloudflare
+Access policy bound to that hostname.
+
 ## Activation (one line, on the site repo)
 
 Federation is inert until the toml advertises it. Add to
 `LUMENAIRE/public/.well-known/stellar.toml`:
 
 ```toml
-FEDERATION_SERVER="https://lmnr-federation.bpeterscqa.workers.dev"
+FEDERATION_SERVER="https://federation.lumenbro.com"
 ```
 
 Additive only — it does not touch `[[CURRENCIES]]` or `ORG_LOGO`.

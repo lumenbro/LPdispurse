@@ -8,6 +8,12 @@ compatibility_date = "2024-12-01"
 # addresses, all of which are already public on-chain.
 preview_urls = false
 
+# Custom domain keeps a workers.dev URL (which embeds the account subdomain,
+# derived from an email address) out of the PUBLIC stellar.toml. Attach in the
+# dashboard: Workers & Pages -> lmnr-federation -> Domains & Routes.
+# lumenbro.com is already on Cloudflare DNS, so the record is created for you.
+# routes = [ { pattern = "federation.lumenbro.com", custom_domain = true } ]
+
 [observability]
 enabled = true
 
