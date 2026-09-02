@@ -34,7 +34,7 @@ export function adminPage(who: string, assetCode: string, assetIssuer: string) {
  .banner.warn{background:#33270a;border:1px solid #9e6a03}
  .banner.bad{background:#3d1418;border:1px solid #a02b31}
  .banner.ok{background:#0f2e18;border:1px solid #238636}
- .num{width:110px} .memo{width:150px} .name{width:130px}
+ .num{width:110px} .memo{width:150px} .name{width:130px} .cad{width:120px}
  .preview{font-size:12px;max-height:320px;overflow:auto}
  .preview td{padding:4px 8px}
 </style></head><body>
@@ -83,9 +83,18 @@ export function adminPage(who: string, assetCode: string, assetIssuer: string) {
       One row = one pool paying one asset. A pool can appear more than once to pay
       multiple assets. Daily amount is capped at ${MAX_DAILY_REWARD.toLocaleString()} per pool.
     </div>
+    <div class="muted" style="margin-bottom:10px">
+      <b>Pays</b> only changes how the daily amount is <i>split</i> &mdash; the spend
+      per day is the same either way. Fewer, larger payments help small holders
+      clear the minimum payment, and cost less in fees.
+      <br>Changing it is safe: a pool is never paid twice for the same stretch of
+      time, and the new setting takes effect once the stretch already paid for
+      runs out. Switching to <b>Daily</b> pays the next 24 hours up front, so that
+      one day's spend looks larger &mdash; the day after it pays nothing.
+    </div>
     <table id="instances"><thead><tr>
       <th style="width:40px">On</th><th>Pool</th><th>Pool ID</th><th>Reward asset</th>
-      <th>Daily amount</th><th>Min payment</th><th>Memo</th><th></th>
+      <th>Daily amount</th><th>Pays</th><th>Per payment</th><th>Min payment</th><th>Memo</th><th></th>
     </tr></thead><tbody></tbody></table>
   </div>
 
@@ -158,7 +167,7 @@ function copyAddr(){
 
 function renderInstances(){
   const tb=document.querySelector('#instances tbody'); tb.innerHTML='';
-  if(!instances.length){tb.innerHTML='<tr><td colspan="8" class="muted">No instances yet &mdash; tick a pool below.</td></tr>';return;}
+  if(!instances.length){tb.innerHTML='<tr><td colspan="10" class="muted">No instances yet &mdash; tick a pool below.</td></tr>';return;}
   instances.forEach((it,i)=>{
     const tr=document.createElement('tr');
     tr.innerHTML=
@@ -167,6 +176,10 @@ function renderInstances(){
       '<td><code title="'+esc(it.poolId)+'">'+it.poolId.slice(0,6)+'&hellip;'+it.poolId.slice(-4)+'</code></td>'+
       '<td>'+(it.rewardAssetCode||'XLM')+'</td>'+
       '<td><input class="num" type="number" min="0" max="'+${MAX_DAILY_REWARD}+'" step="any" value="'+esc(it.dailyAmount)+'" onchange="upd('+i+',\\'dailyAmount\\',this.value)"></td>'+
+      '<td><select class="cad" onchange="upd('+i+',\\'cadence\\',this.value)">'+
+        CADENCES.map(c=>'<option value="'+c[0]+'"'+(cad(it)===c[0]?' selected':'')+'>'+c[1]+'</option>').join('')+
+      '</select></td>'+
+      '<td class="muted" id="per'+i+'">'+perPayment(it)+'</td>'+
       '<td><input class="num" type="number" min="0" step="any" value="'+esc(it.minPayment)+'" onchange="upd('+i+',\\'minPayment\\',this.value)"></td>'+
       '<td><input class="memo" maxlength="28" value="'+esc(it.memo||'')+'" onchange="upd('+i+',\\'memo\\',this.value)"></td>'+
       '<td><button class="ghost" onclick="rm('+i+')">Remove</button></td>';
@@ -189,14 +202,36 @@ function renderDiscovered(){
 }
 
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-function upd(i,k,v){instances[i][k]=v;}
+
+const CADENCES=[['hourly','Hourly'],['12h','Twice daily'],['daily','Daily']];
+const PER_DAY={hourly:24,'12h':2,daily:1};
+function cad(it){return PER_DAY[it.cadence]?it.cadence:'hourly';}
+
+/** What one payment is worth, so the split is visible before saving. */
+function perPayment(it){
+  const n=PER_DAY[cad(it)];
+  const v=Number(it.dailyAmount);
+  if(!isFinite(v)) return '&mdash;';
+  const each=v/n;
+  return esc(each.toFixed(each<1?7:4).replace(/0+$/,'').replace(/\\.$/,''))+
+    ' <span class="muted">&times;'+n+'/day</span>';
+}
+
+function upd(i,k,v){
+  instances[i][k]=v;
+  // The per-payment figure depends on both amount and cadence.
+  if(k==='dailyAmount'||k==='cadence'){
+    const cell=document.getElementById('per'+i);
+    if(cell) cell.innerHTML=perPayment(instances[i]);
+  }
+}
 function rm(i){instances.splice(i,1);renderInstances();renderDiscovered();}
 function toggle(poolId,on){
   if(on){
     const p=discovered.find(x=>x.poolId===poolId);
     instances.push({poolId,poolName:p?p.name:poolId.slice(0,8),
       rewardAssetCode:ASSET.code,rewardAssetIssuer:ASSET.issuer,
-      dailyAmount:"0",minPayment:"0.001",memo:"",enabled:false});
+      dailyAmount:"0",cadence:"hourly",minPayment:"0.001",memo:"",enabled:false});
     msg('warn','Added <b>'+esc(p?p.name:poolId)+'</b> with amount 0 and disabled. Set the amount, tick On, then Save.');
   }else{
     instances=instances.filter(i=>i.poolId!==poolId);
@@ -238,9 +273,11 @@ async function preview(){
     out.innerHTML=j.results.map(r=>{
       const rows=(r.payouts||[]).map(p=>'<tr><td><code>'+p.address.slice(0,8)+'…'+p.address.slice(-4)+'</code></td><td>'+p.share+'</td><td>'+p.amount+'</td></tr>').join('');
       return '<div style="margin-bottom:14px"><b>'+esc(r.poolName)+'</b> <span class="muted">'+r.status+
-        '</span><br><span class="muted">'+r.recipients+' recipient(s), '+r.paid+' '+ASSET.code+' per run'+
+        '</span><br><span class="muted">'+r.recipients+' recipient(s), <b>'+r.paid+' '+ASSET.code+
+        '</b> per payment &middot; '+esc(r.cadenceLabel||'Hourly')+' ('+(r.paymentsPerDay||24)+'&times;/day)'+
+        ' &middot; '+esc(r.dailyAmount||'')+' '+ASSET.code+'/day'+
         (r.noTrustline?' &middot; <span class="warn">'+r.noTrustline+' lack a trustline</span>':'')+'</span>'+
-        (rows?'<table><thead><tr><th>Recipient</th><th>LP share</th><th>Amount</th></tr></thead><tbody>'+rows+'</tbody></table>':'')+'</div>';
+        (rows?'<table><thead><tr><th>Recipient</th><th>LP share</th><th>Amount per payment</th></tr></thead><tbody>'+rows+'</tbody></table>':'')+'</div>';
     }).join('');
   }catch(e){out.innerHTML='<span class="bad">'+e.message+'</span>';}
 }

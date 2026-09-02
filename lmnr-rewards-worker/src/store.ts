@@ -1,5 +1,6 @@
 import type { Env } from "./config";
 import { toStroops } from "./config";
+import { normalizeCadence, type Cadence } from "./cadence";
 
 /**
  * A reward instance = one pool paying one asset. A pool may have several
@@ -13,6 +14,12 @@ export interface RewardInstance {
   rewardAssetIssuer: string;
   /** Whole tokens per day, split across the period. */
   dailyAmount: string;
+  /**
+   * How often this pool pays. `dailyAmount` stays the DAILY budget either way --
+   * daily pays it in one payment, hourly pays 1/24 of it 24 times. Absent on
+   * instances saved before this field existed, which reads as "hourly".
+   */
+  cadence: Cadence;
   /** Whole tokens; payouts below this are skipped so dust doesn't waste an op. */
   minPayment: string;
   memo: string;
@@ -53,7 +60,11 @@ export const MAX_DAILY_REWARD = 100_000;
 
 export async function loadInstances(env: Env): Promise<RewardInstance[]> {
   const stored = await env.LEDGER.get<RewardInstance[]>(CONFIG_KEY, "json");
-  if (stored && Array.isArray(stored) && stored.length > 0) return stored;
+  if (stored && Array.isArray(stored) && stored.length > 0) {
+    // Instances saved before cadence existed have no field; fill it in on read
+    // so callers and the admin page never see `undefined`.
+    return stored.map((i) => ({ ...i, cadence: normalizeCadence(i.cadence) }));
+  }
 
   // Fall back to wrangler.toml vars so the worker keeps running before anyone
   // has touched the admin page.
@@ -66,6 +77,7 @@ export async function loadInstances(env: Env): Promise<RewardInstance[]> {
       rewardAssetCode: env.REWARD_ASSET_CODE,
       rewardAssetIssuer: env.REWARD_ASSET_ISSUER,
       dailyAmount: env.DAILY_REWARD_PER_POOL,
+      cadence: "hourly",
       minPayment: env.MIN_PAYOUT,
       memo: "",
       enabled: true,
@@ -124,6 +136,10 @@ export function validateInstances(list: unknown): {
       errors.push(`${where}: a non-native asset needs an issuer`);
       continue;
     }
+    if (r.cadence !== undefined && normalizeCadence(r.cadence) !== r.cadence) {
+      errors.push(`${where}: cadence must be hourly, 12h or daily`);
+      continue;
+    }
     if ((r.memo ?? "").length > 28) {
       errors.push(`${where}: memo must be 28 characters or fewer`);
       continue;
@@ -142,6 +158,7 @@ export function validateInstances(list: unknown): {
       rewardAssetCode: String(r.rewardAssetCode ?? ""),
       rewardAssetIssuer: String(r.rewardAssetIssuer ?? ""),
       dailyAmount: String(r.dailyAmount),
+      cadence: normalizeCadence(r.cadence),
       minPayment: String(r.minPayment ?? "0"),
       memo: String(r.memo ?? ""),
       enabled: Boolean(r.enabled),

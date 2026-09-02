@@ -3,12 +3,26 @@ import { fromStroops, isDryRun, toStroops, type Env } from "./config";
 import { getPoolHolders } from "./horizon";
 import {
   complete,
+  getPaidThroughAt,
   getRun,
+  instanceKey,
+  legacyPeriodKey,
   periodKey,
   reserve,
+  setPaidThroughAt,
   skip,
   txSucceeded,
 } from "./ledger";
+import {
+  budgetForCadence,
+  cadenceDue,
+  paidThroughAfter,
+  cadenceLabel,
+  humanDuration,
+  normalizeCadence,
+  paymentsPerDay,
+  type Cadence,
+} from "./cadence";
 import { buildPaymentTx, chunk, computePayouts } from "./payout";
 import { MAX_OPS_PER_TX, fromStroops as fs } from "./config";
 import { Keypair as KP } from "@stellar/stellar-sdk";
@@ -26,6 +40,7 @@ import {
 
 interface PoolResult {
   pool: string;
+  cadence: Cadence;
   holders: number;
   paid: string;
   recipients: number;
@@ -37,19 +52,25 @@ interface PoolResult {
 async function runPool(
   env: Env,
   inst: RewardInstance,
-  hourly: boolean,
   now: Date,
   mode: "linear" | "sqrt" = "linear"
 ): Promise<PoolResult> {
   const poolId = inst.poolId;
   const short = inst.poolName || poolId.slice(0, 8);
-  const key = periodKey(poolId, now, hourly);
+  const cadence = normalizeCadence(inst.cadence);
+  const ik = instanceKey(poolId, inst.rewardAssetCode);
+  const key = periodKey(ik, now, cadence);
 
-  // --- Idempotency: has this period already been handled? ---
-  const prior = await getRun(env, key);
+  // --- Guard 1, calendar: has THIS period already been handled? ---
+  // Falls back to the pre-cadence key shape so the deploy that introduced the
+  // instance-scoped namespace cannot re-pay a period the old key already owns.
+  const prior =
+    (await getRun(env, key)) ??
+    (await getRun(env, legacyPeriodKey(poolId, now, cadence)));
   if (prior?.status === "done" || prior?.status === "skipped") {
     return {
       pool: short,
+      cadence,
       holders: 0,
       paid: "0",
       recipients: 0,
@@ -62,8 +83,18 @@ async function runPool(
     // the chain rather than blindly resubmitting -- that is the double-pay path.
     if (await txSucceeded(env, prior.txHash)) {
       await complete(env, key, prior.txHash, "unknown");
+      // That transaction WAS a payment, so it must start the cadence clock.
+      // Measured from `now` rather than the tx's own time: erring later can only
+      // delay the next payment, while erring earlier could let one slip inside a
+      // period that is already funded.
+      await setPaidThroughAt(
+        env,
+        ik,
+        paidThroughAfter(now.getTime(), await getPaidThroughAt(env, ik), cadence)
+      );
       return {
         pool: short,
+        cadence,
         holders: 0,
         paid: "unknown",
         recipients: 0,
@@ -74,6 +105,26 @@ async function runPool(
     // Not on chain -- safe to retry below.
   }
 
+  // --- Guard 2, paid-through: is this stretch of time already funded? ---
+  // This is the one that survives a cadence CHANGE. Each cadence writes calendar
+  // keys in its own namespace, so flipping daily -> hourly right after today's
+  // payment lands on a key nobody has written and guard 1 waves it through.
+  // Nothing is written to the ledger here: the period is not "handled", it is
+  // simply not due, and a later tick inside the same period should re-evaluate.
+  const paidThrough = await getPaidThroughAt(env, ik);
+  const decision = cadenceDue(paidThrough, now.getTime());
+  if (!decision.due) {
+    return {
+      pool: short,
+      cadence,
+      holders: 0,
+      paid: "0",
+      recipients: 0,
+      status: "cadence-wait",
+      note: `${humanDuration(decision.waitMs)} until the next ${cadenceLabel(cadence).toLowerCase()} payment`,
+    };
+  }
+
   const dry = isDryRun(env);
 
   const holders = await getPoolHolders(env, poolId);
@@ -81,12 +132,11 @@ async function runPool(
     // Never write the ledger during a dry run: marking the period "handled"
     // would make the real run skip it.
     if (!dry) await skip(env, key, "no holders");
-    return { pool: short, holders: 0, paid: "0", recipients: 0, status: "no-holders" };
+    return { pool: short, cadence, holders: 0, paid: "0", recipients: 0, status: "no-holders" };
   }
 
   // Per-instance config from KV (set in the admin page), not global vars.
-  const daily = toStroops(inst.dailyAmount);
-  const budget = hourly ? daily / 24n : daily;
+  const budget = budgetForCadence(toStroops(inst.dailyAmount), cadence);
   const { payouts, skippedNoTrustline, dust } = computePayouts(
     holders,
     budget,
@@ -98,6 +148,7 @@ async function runPool(
     if (!dry) await skip(env, key, "no eligible payouts");
     return {
       pool: short,
+      cadence,
       holders: holders.length,
       paid: "0",
       recipients: 0,
@@ -121,6 +172,7 @@ async function runPool(
     }
     return {
       pool: short,
+      cadence,
       holders: holders.length,
       paid: fromStroops(total),
       recipients: payouts.length,
@@ -160,12 +212,18 @@ async function runPool(
   }
 
   await complete(env, key, lastHash, fromStroops(paidTotal));
+  await setPaidThroughAt(
+    env,
+    ik,
+    paidThroughAfter(now.getTime(), paidThrough, cadence)
+  );
   console.log(
-    `pool ${short}: paid ${fromStroops(paidTotal)} to ${payouts.length} holders (${lastHash})`
+    `pool ${short} (${cadence}): paid ${fromStroops(paidTotal)} to ${payouts.length} holders (${lastHash})`
   );
 
   return {
     pool: short,
+    cadence,
     holders: holders.length,
     paid: fromStroops(paidTotal),
     recipients: payouts.length,
@@ -174,19 +232,20 @@ async function runPool(
   };
 }
 
-async function runAll(env: Env, hourly: boolean) {
+async function runAll(env: Env) {
   const now = new Date();
   const results: PoolResult[] = [];
   const instances = (await loadInstances(env)).filter((i) => i.enabled);
   const { weightMode } = await loadSettings(env);
   for (const inst of instances) {
     try {
-      results.push(await runPool(env, inst, hourly, now, weightMode));
+      results.push(await runPool(env, inst, now, weightMode));
     } catch (err: any) {
       // One bad pool must not abort the others.
       console.error(`pool ${inst.poolName} failed: ${err?.message ?? err}`);
       results.push({
         pool: inst.poolName,
+        cadence: normalizeCadence(inst.cadence),
         holders: 0,
         paid: "0",
         recipients: 0,
@@ -227,9 +286,15 @@ async function walletStatus(env: Env) {
   const reserved = 1 + 0.5 * Number(acct.subentry_count ?? 0);
   const xlmBal = bal("XLM");
   const spendable = Math.max(0, xlmBal - reserved);
-  // Fee model matches buildPaymentTx: base 100 stroops x ops x 10, hourly.
-  const opsPerRun = instances.length * 10;
-  const xlmPerDay = (100 * 10 * Math.max(opsPerRun, 1) * 24) / 1e7;
+  // Fee model matches buildPaymentTx: base 100 stroops x ops x 10, where ops is
+  // the recipient count (assumed ~10) and a pool is charged once per PAYMENT.
+  // A daily pool therefore costs 1/24 of an hourly one in fees -- which is the
+  // second reason to move a small pool off hourly, after clearing minPayment.
+  const feeStroopsPerDay = instances.reduce(
+    (a, i) => a + 100 * 10 * 10 * paymentsPerDay(normalizeCadence(i.cadence)),
+    0
+  );
+  const xlmPerDay = Math.max(feeStroopsPerDay, 1000) / 1e7;
 
   const rewardBal = bal(env.REWARD_ASSET_CODE, env.REWARD_ASSET_ISSUER);
   const warnings: string[] = [];
@@ -276,9 +341,11 @@ async function previewAll(env: Env) {
   const { weightMode } = await loadSettings(env);
   const out: any[] = [];
   for (const inst of instances) {
+    const cadence = normalizeCadence(inst.cadence);
     try {
       const holders = await getPoolHolders(env, inst.poolId);
-      const budget = toStroops(inst.dailyAmount) / 24n;
+      // Per PAYMENT, not per day -- this is what the next run actually sends.
+      const budget = budgetForCadence(toStroops(inst.dailyAmount), cadence);
       const { payouts, skippedNoTrustline } = computePayouts(
         holders,
         budget,
@@ -291,6 +358,10 @@ async function previewAll(env: Env) {
       out.push({
         poolName: inst.poolName,
         poolId: inst.poolId,
+        cadence,
+        cadenceLabel: cadenceLabel(cadence),
+        paymentsPerDay: paymentsPerDay(cadence),
+        dailyAmount: inst.dailyAmount,
         status: payouts.length ? "would pay" : "nothing to pay",
         recipients: payouts.length,
         paid: fs(payouts.reduce((a, p) => a + p.stroops, 0n)),
@@ -307,6 +378,10 @@ async function previewAll(env: Env) {
       out.push({
         poolName: inst.poolName,
         poolId: inst.poolId,
+        cadence,
+        cadenceLabel: cadenceLabel(cadence),
+        paymentsPerDay: paymentsPerDay(cadence),
+        dailyAmount: inst.dailyAmount,
         status: "error: " + (err?.message ?? err),
         recipients: 0,
         paid: "0",
@@ -319,11 +394,17 @@ async function previewAll(env: Env) {
 
 export default {
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
-    const hourly = event.cron !== "0 0 * * *";
+    // The cron MUST stay hourly. Cadence is per pool now and is evaluated on
+    // every tick, so a slower cron does not make pools pay less often -- it
+    // starves the hourly ones, which would then pay 1/24 of the daily budget
+    // once a day.
+    if (event.cron !== "0 * * * *") {
+      console.warn(
+        `cron is "${event.cron}", expected "0 * * * *" -- hourly pools will underpay`
+      );
+    }
     ctx.waitUntil(
-      runAll(env, hourly).then((r) =>
-        console.log("run complete:", JSON.stringify(r))
-      )
+      runAll(env).then((r) => console.log("run complete:", JSON.stringify(r)))
     );
   },
 
@@ -408,10 +489,12 @@ export default {
     }
 
     if (p === "/run") {
+      // No cadence override: each pool uses its own configured cadence, and the
+      // lastPaidAt guard applies here exactly as it does to the cron. A manual
+      // run cannot be used to pay a pool twice inside its period.
       const forceDry = url.searchParams.get("dry") === "1";
       const effEnv = forceDry ? ({ ...env, DRY_RUN: "true" } as Env) : env;
-      const hourly = url.searchParams.get("daily") !== "1";
-      const results = await runAll(effEnv, hourly);
+      const results = await runAll(effEnv);
       return Response.json({ ok: true, dryRun: isDryRun(effEnv), results });
     }
 

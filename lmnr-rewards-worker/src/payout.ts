@@ -8,7 +8,7 @@ import {
   Operation,
   TransactionBuilder,
 } from "@stellar/stellar-sdk";
-import { MAX_OPS_PER_TX, fromStroops, toStroops, type Env } from "./config";
+import { MAX_OPS_PER_TX, fromStroops, type Env } from "./config";
 import type { LpHolder } from "./horizon";
 
 export interface Payout {
@@ -143,7 +143,5 @@ export async function buildPaymentTx(
   return { tx, server };
 }
 
-export function budgetForPeriod(env: Env, hourly: boolean): bigint {
-  const daily = toStroops(env.DAILY_REWARD_PER_POOL);
-  return hourly ? daily / 24n : daily;
-}
+// Period budgets now come from `budgetForCadence` in cadence.ts, which slices a
+// per-instance daily budget rather than the single global var this used.

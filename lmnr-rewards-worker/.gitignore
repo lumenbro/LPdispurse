@@ -2,3 +2,4 @@ node_modules/
 dist-test/
 .wrangler/
 .dev.vars
+.test-build/
