@@ -24,9 +24,13 @@ crons = ["0 * * * *"]
 # Cost, on the Workers Paid plan (1M DO requests + 400,000 GB-s included/month):
 # the object holds ONLY the lock and the state -- Horizon paging and transaction
 # submission stay in the Worker -- so each call is milliseconds, not the ~30s a
-# payout takes. Three pools paying hourly is ~4,400 requests and well under
-# 100 GB-s a month. Do not move slow work inside the object; duration is billed
-# on wall time and doing so would raise it by orders of magnitude.
+# payout takes. Measured on the first live run: 3 calls per payment (begin, a
+# pending commit before submitting, then the final commit), with the ~8 seconds
+# of Horizon and submission work sitting BETWEEN them, outside the object. Three
+# pools paying hourly is ~6,500 requests and well under 100 GB-s a month -- under
+# 1% of the included allowance. Do not move slow work inside the object;
+# duration is billed on wall time and doing so would raise it by orders of
+# magnitude. A multi-batch payout costs batches + 2 calls.
 [[durable_objects.bindings]]
 name = "PAYOUT_LOCK"
 class_name = "PayoutLock"
