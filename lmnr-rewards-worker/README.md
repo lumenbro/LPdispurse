@@ -166,3 +166,37 @@ not asset-specific.
 
 So the thing LPs actually see on a reward payment is the **memo**, set per pool in
 the dashboard. Keep it meaningful (e.g. `xLMNR LP Rewards`).
+
+## Reward distribution curve
+
+Global setting (all pools), on the admin page.
+
+| Mode | Weight | Effect |
+|---|---|---|
+| **Proportional** | share | strict pro-rata; 54% of the pool earns 54% of rewards |
+| **Square root** | sqrt(share) | compresses the whole curve |
+
+Measured on the live SHX/xLMNR pool at 3,000/day:
+
+| LP share | Proportional | Square root |
+|---:|---:|---:|
+| 54.09% | 1,622.6 | 1,093.7 |
+| 27.84% | 835.1 | 784.6 |
+| 10.94% | 328.3 | 491.9 |
+| 3.78% | 113.5 | 289.3 |
+| 0.10% | 3.1 | 47.8 |
+| 0.03% | 0.9 | 26.0 |
+
+Square root was chosen over a hard percentage cap because a cap flattens every
+holder above it to the *same* payout — a 54% and an 11% holder would both receive
+750 — which removes any reason to deepen a pool you already lead. Square root
+keeps the ordering intact (more liquidity always earns more) while narrowing the
+gap between largest and smallest.
+
+Implementation note: weights use an integer `isqrt` on stroop-scale bigints,
+pre-scaled by 1e18 so small holders keep meaningful resolution. Float `Math.sqrt`
+would lose precision on large balances.
+
+Caveat worth knowing: neither mode can stop someone splitting a position across
+several wallets. Square root actually rewards splitting (two half-positions earn
+more than one whole), so it is a distribution preference, not a Sybil defence.

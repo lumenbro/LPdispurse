@@ -16,6 +16,43 @@ export interface Payout {
   stroops: bigint;
 }
 
+/** How a holder's LP balance is turned into a reward weight. */
+export type WeightMode = "linear" | "sqrt";
+
+/**
+ * Integer square root (Newton's method) for bigint.
+ * Used instead of Math.sqrt because LP balances are stroop-scale bigints and
+ * float conversion would lose precision on large holdings.
+ */
+export function isqrt(n: bigint): bigint {
+  if (n < 0n) throw new Error("isqrt of negative");
+  if (n < 2n) return n;
+  let x = n;
+  let y = (x + 1n) / 2n;
+  while (y < x) {
+    x = y;
+    y = (x + n / x) / 2n;
+  }
+  return x;
+}
+
+/** Extra resolution before the sqrt so small holders keep meaningful weight. */
+const SQRT_SCALE = 1_000_000_000_000_000_000n; // 1e18
+
+/**
+ * Reward weight for a holder.
+ *
+ * `linear`  — weight = shares. Strictly pro-rata: a 54% holder earns 54%.
+ * `sqrt`    — weight = sqrt(shares). Compresses the whole curve, so a large
+ *             holder still earns more than a small one (unlike a hard cap,
+ *             which flattens everyone above it to the same figure and removes
+ *             any reason to deepen a pool you already lead), but the ratio
+ *             between biggest and smallest narrows sharply.
+ */
+export function weightFor(shares: bigint, mode: WeightMode): bigint {
+  return mode === "sqrt" ? isqrt(shares * SQRT_SCALE) : shares;
+}
+
 /**
  * Pro-rata split of one period's budget across holders, by LP share.
  *
@@ -26,7 +63,8 @@ export interface Payout {
 export function computePayouts(
   holders: LpHolder[],
   budgetStroops: bigint,
-  minPayoutStroops: bigint
+  minPayoutStroops: bigint,
+  mode: WeightMode = "linear"
 ): { payouts: Payout[]; skippedNoTrustline: string[]; dust: bigint } {
   const eligible = holders.filter((h) => h.hasTrustline && h.shares > 0n);
   const skippedNoTrustline = holders
@@ -35,7 +73,9 @@ export function computePayouts(
 
   // Holders without a trustline are excluded from the denominator too, so the
   // remaining LPs share the full budget rather than silently burning a slice.
-  const total = eligible.reduce((a, h) => a + h.shares, 0n);
+  const weights = new Map<string, bigint>();
+  for (const h of eligible) weights.set(h.address, weightFor(h.shares, mode));
+  const total = eligible.reduce((a, h) => a + weights.get(h.address)!, 0n);
   if (total === 0n) {
     return { payouts: [], skippedNoTrustline, dust: budgetStroops };
   }
@@ -43,7 +83,7 @@ export function computePayouts(
   const payouts: Payout[] = [];
   let allocated = 0n;
   for (const h of eligible) {
-    const amount = (budgetStroops * h.shares) / total; // truncating
+    const amount = (budgetStroops * weights.get(h.address)!) / total; // truncating
     if (amount >= minPayoutStroops) {
       payouts.push({ address: h.address, stroops: amount });
       allocated += amount;

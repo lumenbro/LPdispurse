@@ -49,6 +49,29 @@ export function adminPage(who: string, assetCode: string, assetIssuer: string) {
 <main>
   <div id="msg"></div>
 
+  <div class="card">
+    <h2>Reward distribution curve</h2>
+    <div class="muted" style="margin-bottom:10px">
+      Applies to <b>every</b> pool. Changes how a holder's LP share becomes a reward.
+    </div>
+    <div class="row" style="gap:16px;align-items:flex-start">
+      <label class="row" style="gap:8px;align-items:flex-start;flex:1;min-width:260px">
+        <input type="radio" name="wm" value="linear" onchange="setMode('linear')">
+        <span><b>Proportional</b><br>
+          <span class="muted">Strictly pro-rata. A holder with 54% of the pool
+          earns 54% of the rewards.</span></span>
+      </label>
+      <label class="row" style="gap:8px;align-items:flex-start;flex:1;min-width:260px">
+        <input type="radio" name="wm" value="sqrt" onchange="setMode('sqrt')">
+        <span><b>Square root (compressed)</b><br>
+          <span class="muted">Weights by &radic;share. Larger holders still earn
+          more &mdash; so adding liquidity always helps &mdash; but the gap between
+          biggest and smallest narrows a lot.</span></span>
+      </label>
+    </div>
+    <div id="wmMsg" class="muted" style="margin-top:8px"></div>
+  </div>
+
   <div class="card" id="walletCard">
     <h2>Disbursement wallet</h2>
     <div id="wallet" class="muted">loading&hellip;</div>
@@ -92,10 +115,14 @@ function msg(kind,text){document.getElementById('msg').innerHTML=
   '<div class="banner '+kind+'">'+text+'</div>';}
 
 async function load(){
-  const [c,d]=await Promise.all([
+  const [c,d,st]=await Promise.all([
     fetch('/api/config').then(r=>r.json()),
-    fetch('/api/pools').then(r=>r.json())
+    fetch('/api/pools').then(r=>r.json()),
+    fetch('/api/settings').then(r=>r.json())
   ]);
+  const wm=(st.settings&&st.settings.weightMode)||'linear';
+  const el=document.querySelector('input[name=wm][value="'+wm+'"]');
+  if(el) el.checked=true;
   instances=c.instances||[]; discovered=d.pools||[];
   renderInstances(); renderDiscovered(); loadWallet();
 }
@@ -175,6 +202,19 @@ function toggle(poolId,on){
     instances=instances.filter(i=>i.poolId!==poolId);
   }
   renderInstances();renderDiscovered();
+}
+
+async function setMode(mode){
+  const out=document.getElementById('wmMsg');
+  out.textContent='Saving…';
+  try{
+    const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({weightMode:mode})});
+    const j=await r.json();
+    out.innerHTML = j.ok
+      ? '<span class="ok">Saved &mdash; applies from the next run. Press &ldquo;Preview payouts&rdquo; to see the effect.</span>'
+      : '<span class="bad">'+esc(j.reason||'failed')+'</span>';
+  }catch(e){out.innerHTML='<span class="bad">'+e.message+'</span>';}
 }
 
 async function save(){

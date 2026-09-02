@@ -17,7 +17,9 @@ import { checkAdmin, denied } from "./auth";
 import { discoverPools } from "./discover";
 import {
   loadInstances,
+  loadSettings,
   saveInstances,
+  saveSettings,
   validateInstances,
   type RewardInstance,
 } from "./store";
@@ -36,7 +38,8 @@ async function runPool(
   env: Env,
   inst: RewardInstance,
   hourly: boolean,
-  now: Date
+  now: Date,
+  mode: "linear" | "sqrt" = "linear"
 ): Promise<PoolResult> {
   const poolId = inst.poolId;
   const short = inst.poolName || poolId.slice(0, 8);
@@ -87,7 +90,8 @@ async function runPool(
   const { payouts, skippedNoTrustline, dust } = computePayouts(
     holders,
     budget,
-    toStroops(inst.minPayment)
+    toStroops(inst.minPayment),
+    mode
   );
 
   if (payouts.length === 0) {
@@ -174,9 +178,10 @@ async function runAll(env: Env, hourly: boolean) {
   const now = new Date();
   const results: PoolResult[] = [];
   const instances = (await loadInstances(env)).filter((i) => i.enabled);
+  const { weightMode } = await loadSettings(env);
   for (const inst of instances) {
     try {
-      results.push(await runPool(env, inst, hourly, now));
+      results.push(await runPool(env, inst, hourly, now, weightMode));
     } catch (err: any) {
       // One bad pool must not abort the others.
       console.error(`pool ${inst.poolName} failed: ${err?.message ?? err}`);
@@ -268,6 +273,7 @@ async function walletStatus(env: Env) {
 /** What the next run would pay, per enabled instance. Sends nothing. */
 async function previewAll(env: Env) {
   const instances = (await loadInstances(env)).filter((i) => i.enabled);
+  const { weightMode } = await loadSettings(env);
   const out: any[] = [];
   for (const inst of instances) {
     try {
@@ -276,7 +282,8 @@ async function previewAll(env: Env) {
       const { payouts, skippedNoTrustline } = computePayouts(
         holders,
         budget,
-        toStroops(inst.minPayment)
+        toStroops(inst.minPayment),
+        weightMode
       );
       const totalShares = holders
         .filter((h) => h.hasTrustline)
@@ -335,6 +342,7 @@ export default {
         enabled: instances.filter((i) => i.enabled).length,
         dryRun: isDryRun(env),
         disburserConfigured: Boolean(env.DISBURSER_SECRET),
+        weightMode: (await loadSettings(env)).weightMode,
       });
     }
 
@@ -367,6 +375,24 @@ export default {
         enabled: enabled.length,
         totalDaily: String(totalDaily),
       });
+    }
+
+    if (p === "/api/settings" && req.method === "GET") {
+      return Response.json({ ok: true, settings: await loadSettings(env) });
+    }
+
+    if (p === "/api/settings" && req.method === "POST") {
+      const body: any = await req.json().catch(() => null);
+      const mode = body?.weightMode;
+      if (mode !== "linear" && mode !== "sqrt") {
+        return Response.json(
+          { ok: false, reason: "weightMode must be 'linear' or 'sqrt'" },
+          { status: 400 }
+        );
+      }
+      await saveSettings(env, { weightMode: mode });
+      console.log(`weightMode set to ${mode} by ${auth.who}`);
+      return Response.json({ ok: true, weightMode: mode });
     }
 
     if (p === "/api/pools") {

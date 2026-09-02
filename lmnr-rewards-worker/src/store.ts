@@ -20,6 +20,27 @@ export interface RewardInstance {
 }
 
 const CONFIG_KEY = "config:instances";
+const SETTINGS_KEY = "config:settings";
+
+/** Global settings, applied to every pool. */
+export interface Settings {
+  /** "linear" = strict pro-rata; "sqrt" = compressed curve. */
+  weightMode: "linear" | "sqrt";
+}
+
+export const DEFAULT_SETTINGS: Settings = { weightMode: "linear" };
+
+export async function loadSettings(env: Env): Promise<Settings> {
+  const s = await env.LEDGER.get<Settings>(SETTINGS_KEY, "json");
+  return s && (s.weightMode === "sqrt" || s.weightMode === "linear")
+    ? s
+    : DEFAULT_SETTINGS;
+}
+
+export async function saveSettings(env: Env, s: Settings) {
+  const mode = s.weightMode === "sqrt" ? "sqrt" : "linear";
+  await env.LEDGER.put(SETTINGS_KEY, JSON.stringify({ weightMode: mode }));
+}
 
 /**
  * Hard ceiling the UI cannot exceed, in whole tokens per pool per day.
