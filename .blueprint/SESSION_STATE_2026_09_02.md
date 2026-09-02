@@ -98,6 +98,38 @@ Different from what the earlier notes said — read KV, not the notes:
 - Neither instance has a `cadence` field yet → both read as hourly, unchanged
 - Wallet: **38,737.5 xLMNR, 5.44 XLM**. At 2500/day that is ~15 days of runway.
 
+## TODO — only if the dev raises `minPayment`
+Today this is a non-issue and needs no work. Recording it so nobody re-derives it.
+
+Sub-threshold payouts are **discarded**, not carried forward or redistributed —
+the value stays in the disbursement wallet. That is the CORRECT behaviour: the
+reason to raise the floor is to deny dust, so accumulating it and eventually
+paying it out would defeat the point. Do not build carry-forward accounting.
+
+Measured 2026-09-02 against live Horizon data, min 0.001, curve = sqrt:
+
+| Pool | Smallest holder | Gets (sqrt, hourly) | Cutoff bites below | Margin |
+|---|---|---|---|---|
+| SHX/xLMNR 2500/day | 0.030% | 0.901/hr | 0.0000000375% | ~800,000x |
+| XLM/xLMNR 240/day | 0.094% | 0.159/hr | 0.0000037% | ~25,000x |
+
+Nobody is dropped on either pool, at any cadence, under either curve.
+
+- **sqrt lifts the floor about four orders of magnitude vs linear.** The tight
+  combination is **Proportional + hourly on XLM/xLMNR**: cutoff 0.01% against a
+  smallest holder of 0.094%, only 9.4x of margin. That pool is disabled and the
+  curve is sqrt, so it is not live — but it is the case to re-check if the dev
+  re-enables that pool AND flips back to Proportional.
+- Validation rejects a config where a pool would pay **nobody**; it does not
+  catch losing a single small holder.
+- **If the floor is ever raised**, the proportionate change is to list excluded
+  holders in the payout preview so the loss is visible on the admin page rather
+  than silent. Not carry-forward.
+- Repro: the probe scripts used are gone with the scratchpad; rebuild by
+  compiling `src/payout.ts` and feeding it Horizon holder data. Watch for
+  integer division when converting shares to a percentage — `Number(a*1e7n/b)`
+  truncates a tiny share to 0 and reports an infinite margin.
+
 ## OTHER OPEN ITEMS
 - **lumexo stale logo**: NOT our bug. app.lumexo.io caches
   `apayhub.authentic-payment.com/.../lmnr-logo-663x1024.jpg` in its own ticker.
