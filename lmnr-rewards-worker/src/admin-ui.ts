@@ -111,7 +111,7 @@ export function adminPage(who: string, assetCode: string, assetIssuer: string) {
   <div class="card">
     <h2>Payout preview</h2>
     <div class="muted" style="margin-bottom:10px">
-      Exactly what the next run would pay. Nothing is sent.
+      What the next run would pay, including whether it is due yet. Nothing is sent.
     </div>
     <div id="previewOut" class="preview muted">Press &ldquo;Preview payouts&rdquo;.</div>
   </div>
@@ -174,7 +174,7 @@ function renderInstances(){
       '<td><input type="checkbox" '+(it.enabled?'checked':'')+' onchange="upd('+i+',\\'enabled\\',this.checked)"></td>'+
       '<td><input class="name" value="'+esc(it.poolName)+'" onchange="upd('+i+',\\'poolName\\',this.value)"></td>'+
       '<td><code title="'+esc(it.poolId)+'">'+it.poolId.slice(0,6)+'&hellip;'+it.poolId.slice(-4)+'</code></td>'+
-      '<td>'+(it.rewardAssetCode||'XLM')+'</td>'+
+      '<td>'+esc(it.rewardAssetCode||'XLM')+'</td>'+
       '<td><input class="num" type="number" min="0" max="'+${MAX_DAILY_REWARD}+'" step="any" value="'+esc(it.dailyAmount)+'" onchange="upd('+i+',\\'dailyAmount\\',this.value)"></td>'+
       '<td><select class="cad" onchange="upd('+i+',\\'cadence\\',this.value)">'+
         CADENCES.map(c=>'<option value="'+c[0]+'"'+(cad(it)===c[0]?' selected':'')+'>'+c[1]+'</option>').join('')+
@@ -234,7 +234,12 @@ function toggle(poolId,on){
       dailyAmount:"0",cadence:"hourly",minPayment:"0.001",memo:"",enabled:false});
     msg('warn','Added <b>'+esc(p?p.name:poolId)+'</b> with amount 0 and disabled. Set the amount, tick On, then Save.');
   }else{
-    instances=instances.filter(i=>i.poolId!==poolId);
+    // Only the instance for the default reward asset. A pool may also have rows
+    // paying OTHER assets, and unticking it in the discovery list must not
+    // silently delete those.
+    const others=instances.filter(i=>i.poolId===poolId&&i.rewardAssetCode!==ASSET.code);
+    instances=instances.filter(i=>!(i.poolId===poolId&&i.rewardAssetCode===ASSET.code));
+    if(others.length) msg('warn','Kept '+others.length+' row(s) on that pool paying a different asset.');
   }
   renderInstances();renderDiscovered();
 }
@@ -272,10 +277,13 @@ async function preview(){
     if(!j.results.length){out.innerHTML='<span class="muted">No enabled instances.</span>';return;}
     out.innerHTML=j.results.map(r=>{
       const rows=(r.payouts||[]).map(p=>'<tr><td><code>'+p.address.slice(0,8)+'…'+p.address.slice(-4)+'</code></td><td>'+p.share+'</td><td>'+p.amount+'</td></tr>').join('');
-      return '<div style="margin-bottom:14px"><b>'+esc(r.poolName)+'</b> <span class="muted">'+r.status+
-        '</span><br><span class="muted">'+r.recipients+' recipient(s), <b>'+r.paid+' '+ASSET.code+
+      const code=esc(r.assetCode||ASSET.code);
+      return '<div style="margin-bottom:14px"><b>'+esc(r.poolName)+'</b> <span class="'+
+        (r.due===false?'warn':'muted')+'">'+esc(r.status)+
+        (r.waitNote?' &mdash; '+esc(r.waitNote):'')+
+        '</span><br><span class="muted">'+r.recipients+' recipient(s), <b>'+esc(r.paid)+' '+code+
         '</b> per payment &middot; '+esc(r.cadenceLabel||'Hourly')+' ('+(r.paymentsPerDay||24)+'&times;/day)'+
-        ' &middot; '+esc(r.dailyAmount||'')+' '+ASSET.code+'/day'+
+        ' &middot; '+esc(r.dailyAmount||'')+' '+code+'/day'+
         (r.noTrustline?' &middot; <span class="warn">'+r.noTrustline+' lack a trustline</span>':'')+'</span>'+
         (rows?'<table><thead><tr><th>Recipient</th><th>LP share</th><th>Amount per payment</th></tr></thead><tbody>'+rows+'</tbody></table>':'')+'</div>';
     }).join('');

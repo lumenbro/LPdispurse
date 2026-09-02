@@ -16,11 +16,21 @@ export interface LpHolder {
  * account without a trustline fails the ENTIRE transaction, not just that op.
  * (LP providers in an xLMNR pool will normally already hold one, but a pool
  * pairing two non-reward assets would not.)
+ *
+ * `rewardAsset` names the asset to check; it defaults to the global one only
+ * for callers that have no instance in hand.
  */
 export async function getPoolHolders(
   env: Env,
-  poolId: string
+  poolId: string,
+  rewardAsset?: { code: string; issuer: string }
 ): Promise<LpHolder[]> {
+  // Per INSTANCE, not the global var. An instance paying a different asset was
+  // checking the wrong trustline entirely: holders who could not receive the
+  // instance's asset were included (failing the whole transaction) and holders
+  // who could were excluded for lacking an unrelated one.
+  const wantCode = rewardAsset?.code ?? env.REWARD_ASSET_CODE;
+  const wantIssuer = rewardAsset?.issuer ?? env.REWARD_ASSET_ISSUER;
   const holders: LpHolder[] = [];
   let url =
     `${env.HORIZON_URL}/accounts?liquidity_pool=${poolId}&limit=200`;
@@ -41,11 +51,13 @@ export async function getPoolHolders(
       );
       if (!lp || Number(lp.balance) <= 0) continue;
 
-      const hasTrustline = acct.balances?.some(
-        (b: any) =>
-          b.asset_code === env.REWARD_ASSET_CODE &&
-          b.asset_issuer === env.REWARD_ASSET_ISSUER
-      );
+      // Native XLM needs no trustline: every funded account can receive it.
+      const hasTrustline = wantCode
+        ? acct.balances?.some(
+            (b: any) =>
+              b.asset_code === wantCode && b.asset_issuer === wantIssuer
+          )
+        : true;
 
       holders.push({
         address: acct.account_id,

@@ -1,6 +1,6 @@
 import type { Env } from "./config";
 import { toStroops } from "./config";
-import { normalizeCadence, type Cadence } from "./cadence";
+import { normalizeCadence, paymentsPerDay, type Cadence } from "./cadence";
 
 /**
  * A reward instance = one pool paying one asset. A pool may have several
@@ -57,6 +57,11 @@ export async function saveSettings(env: Env, s: Settings) {
  * depth -- even a compromised UI or stolen session cannot set an absurd rate.
  */
 export const MAX_DAILY_REWARD = 100_000;
+
+/** Stellar asset codes: 1-12 alphanumeric. Anything else is not an asset. */
+const ASSET_CODE_RE = /^[A-Za-z0-9]{1,12}$/;
+/** Stellar public keys: Ed25519, 56 chars of base32 starting with G. */
+const ISSUER_RE = /^G[A-Z2-7]{55}$/;
 
 export async function loadInstances(env: Env): Promise<RewardInstance[]> {
   const stored = await env.LEDGER.get<RewardInstance[]>(CONFIG_KEY, "json");
@@ -136,6 +141,17 @@ export function validateInstances(list: unknown): {
       errors.push(`${where}: a non-native asset needs an issuer`);
       continue;
     }
+    // Strict syntax, not just presence. These strings reach both a payment
+    // operation and the admin page's HTML, so a malformed one is either a
+    // failed transaction or stored markup.
+    if (r.rewardAssetCode && !ASSET_CODE_RE.test(r.rewardAssetCode)) {
+      errors.push(`${where}: asset code must be 1-12 letters or digits`);
+      continue;
+    }
+    if (r.rewardAssetIssuer && !ISSUER_RE.test(r.rewardAssetIssuer)) {
+      errors.push(`${where}: issuer must be a Stellar public key (G...)`);
+      continue;
+    }
     if (r.cadence !== undefined && normalizeCadence(r.cadence) !== r.cadence) {
       errors.push(`${where}: cadence must be hourly, 12h or daily`);
       continue;
@@ -145,10 +161,27 @@ export function validateInstances(list: unknown): {
       continue;
     }
     // Sanity: catch a fat-fingered amount before it becomes a payment.
+    // Both fields, not just dailyAmount -- a minPayment of "1e-7" is a finite
+    // non-negative Number and passes the check above, then throws inside every
+    // run when toStroops sees it.
     try {
       toStroops(String(r.dailyAmount));
+      toStroops(String(r.minPayment ?? "0"));
     } catch {
-      errors.push(`${where}: dailyAmount is not a valid amount`);
+      errors.push(`${where}: dailyAmount or minPayment is not a valid amount`);
+      continue;
+    }
+
+    // Cadence and minPayment interact: a per-payment budget below the minimum
+    // pays NOTHING, every run, forever, and the skipped value is not carried
+    // forward. Refuse the config rather than let a pool silently stop paying.
+    const perPayment = daily / paymentsPerDay(normalizeCadence(r.cadence));
+    if (daily > 0 && minPay > 0 && perPayment < minPay) {
+      errors.push(
+        `${where}: ${daily}/day split ${paymentsPerDay(normalizeCadence(r.cadence))} ways ` +
+          `is ${perPayment} per payment, below the ${minPay} minimum -- this pool ` +
+          `would pay nothing. Lower the minimum or pay less often.`
+      );
       continue;
     }
 

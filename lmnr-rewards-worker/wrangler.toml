@@ -10,7 +10,9 @@ compatibility_flags = ["nodejs_compat"]
 # scoped to the Worker covers both, but disabling previews removes the surface.
 preview_urls = false
 
-# Hourly. Change to "0 0 * * *" for daily.
+# MUST stay hourly. Payout frequency is now a PER-POOL setting evaluated on
+# every tick; a slower cron does not make pools pay less often, it starves the
+# hourly ones into paying 1/24 of their daily budget once a day.
 [triggers]
 crons = ["0 * * * *"]
 
@@ -28,7 +30,8 @@ HORIZON_URL = "https://horizon.stellar.org"
 NETWORK = "public"
 REWARD_ASSET_CODE = "xLMNR"
 REWARD_ASSET_ISSUER = "GDKA6WVMFSA73BMEVKPO6WXSSWP4MPRBDJVSXLLSEVIEVH226L5RJ7NL"
-# Daily reward budget PER POOL, in whole tokens. Emission is this / 24 per hour.
+# Seed values only: used until someone saves config on the admin page, after
+# which per-pool settings in KV (config:instances) take over entirely.
 DAILY_REWARD_PER_POOL = "4000"
 # Skip payouts below this (whole tokens) so dust doesn't waste an operation.
 MIN_PAYOUT = "0.001"
