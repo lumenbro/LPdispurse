@@ -8,7 +8,7 @@
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
     "typecheck": "tsc --noEmit",
-    "test": "tsc src/cadence.ts src/ledger.ts --outDir .test-build --module esnext --target es2022 --moduleResolution bundler --skipLibCheck --types @cloudflare/workers-types && node test/cadence.test.mjs"
+    "test": "tsc src/cadence.ts src/ledger.ts src/lock.ts --outDir .test-build --module esnext --target es2022 --moduleResolution bundler --skipLibCheck --types @cloudflare/workers-types && sed -i -E 's#(from \"\\./[A-Za-z0-9_-]+)\"#\\1.js\"#g' .test-build/*.js && node test/cadence.test.mjs"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^14.4.2"

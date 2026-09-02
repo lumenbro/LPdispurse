@@ -2,17 +2,13 @@ import { Keypair } from "@stellar/stellar-sdk";
 import { fromStroops, isDryRun, toStroops, type Env } from "./config";
 import { getPoolHolders } from "./horizon";
 import {
-  clearPending,
   complete,
   getPaidThroughAt,
-  getPending,
   getRun,
   instanceKey,
   legacyPeriodKeys,
   periodEnd,
   periodKey,
-  setPaidThroughAt,
-  setPending,
   skip,
   txSucceeded,
   type PendingRun,
@@ -33,6 +29,10 @@ import { Keypair as KP } from "@stellar/stellar-sdk";
 import { adminPage } from "./admin-ui";
 import { checkAdmin, denied } from "./auth";
 import { discoverPools } from "./discover";
+import { PayoutLock, lockFor } from "./lock";
+
+// Re-exported so the Durable Object binding in wrangler.toml can find the class.
+export { PayoutLock };
 import {
   loadInstances,
   loadSettings,
@@ -66,9 +66,9 @@ async function runPool(
   const ik = instanceKey(poolId, asset.code, asset.issuer);
   const key = periodKey(ik, now, cadence);
 
-  // Computed FIRST. Every write below is gated on it -- including the ones in
-  // the recovery path, which previously ran before this was even evaluated and
-  // let a dry run mutate the ledger.
+  // Computed FIRST. Every write below is gated on it -- including the ones on
+  // the recovery path, which previously ran before this was evaluated at all
+  // and let a dry run mutate the ledger.
   const dry = isDryRun(env);
   const res = (extra: Partial<PoolResult>): PoolResult => ({
     pool: short,
@@ -80,204 +80,255 @@ async function runPool(
     ...extra,
   });
 
-  // --- Guard 0, in-flight: did a payout we already built ever land? ---
-  // Resolved BEFORE anything else and independently of the current cadence,
-  // because the operator may have changed cadence while it was in flight.
-  const pending = await getPending(env, ik);
-  if (pending) {
+  const lock = lockFor(env.PAYOUT_LOCK, ik);
+
+  // Migration seed: state written before the lock existed. Only ever applied
+  // when the lock has no coverage of its own, and only ever moves it forward.
+  const seedCoverageTo = await legacyCoverage(env, ik, poolId, asset.code, now, cadence);
+
+  const begin = await lock.begin({
+    now: now.getTime(),
+    cadence,
+    seedCoverageTo,
+    dry,
+  });
+
+  if (begin.action === "busy") {
+    // Another invocation holds the lease. This is the race the lock exists for:
+    // previously both would have read "not paid yet" from KV and both paid.
+    return res({
+      status: "locked",
+      note: `another run is in progress until ${new Date(begin.expiresAt).toISOString()}`,
+    });
+  }
+
+  if (begin.action === "wait") {
+    return res({
+      status: "cadence-wait",
+      note: `${humanDuration(begin.waitMs)} until the next ${cadenceLabel(cadence).toLowerCase()} payment`,
+    });
+  }
+
+  if (begin.action === "attempted") {
+    return res({ status: "already-handled", note: "nothing to pay this period" });
+  }
+
+  if (begin.action === "needs-attention") {
+    return res({
+      status: "needs-attention",
+      note: `a partial payout of ${begin.pending.totalBatches} transactions is unresolved; reconcile manually`,
+    });
+  }
+
+  if (begin.action === "resolve") {
+    // A payout was built and we do not know whether it landed. Resolved here,
+    // outside the lock's own execution, because it means talking to Horizon.
+    const pending = begin.pending;
     const landed = await Promise.all(
       pending.batches.map((b) => txSucceeded(env, b.txHash))
     );
-    const anyLanded = landed.some(Boolean);
     const allLanded =
       landed.length === pending.totalBatches && landed.every(Boolean);
+    const anyLanded = landed.some(Boolean);
+    const lastHash = pending.batches.at(-1)!.txHash;
+
+    if (dry) {
+      await lock.commit(begin.token, { kind: "abandoned" });
+      return res({
+        status: allLanded ? "recovered-already-paid" : "would-retry",
+        txHash: lastHash,
+        note: "dry run: not recorded",
+      });
+    }
 
     if (allLanded) {
-      if (!dry) {
-        await complete(env, pending.periodKey, pending.batches.at(-1)!.txHash, "unknown");
-        // Coverage as it was fixed when the payout was BUILT. Using `now` would
-        // shift the funded window forward by the length of the outage and leave
-        // the gap between unpaid by anyone.
-        await setPaidThroughAt(env, ik, pending.coverageTo);
-        await clearPending(env, ik);
-      }
+      // Coverage as fixed when the payout was BUILT. Using the recovery time
+      // would shift the funded window forward by the length of the outage and
+      // leave that stretch unpaid by anyone.
+      await lock.commit(begin.token, {
+        kind: "resolved-paid",
+        coverageTo: pending.coverageTo,
+      });
+      await complete(env, pending.periodKey, lastHash, "unknown");
       return res({
         status: "recovered-already-paid",
         paid: "unknown",
-        txHash: pending.batches.at(-1)!.txHash,
-        note: dry ? "dry run: not recorded" : undefined,
+        txHash: lastHash,
       });
     }
 
     if (!anyLanded) {
-      // Nothing landed -- the payout never happened. Safe to drop and retry.
-      if (!dry) await clearPending(env, ik);
-    } else {
-      // Some transactions landed and some did not. Batch membership is not
-      // reproducible (the holder set moves between runs), so there is no honest
-      // way to work out what is still owed. Fail CLOSED and say so rather than
-      // guess and risk paying someone twice.
-      console.error(
-        `pool ${short}: partial multi-batch payout, ${landed.filter(Boolean).length}/` +
-          `${pending.totalBatches} landed -- needs manual reconciliation`
-      );
+      await lock.commit(begin.token, { kind: "resolved-failed" });
+      return res({ status: "retrying", note: "previous payout never landed" });
+    }
+
+    // Some landed, some did not. Batch membership is not reproducible -- the
+    // holder set moves between runs -- so there is no honest way to work out
+    // what is still owed. Fail CLOSED rather than risk paying someone twice.
+    console.error(
+      `pool ${short}: partial payout, ${landed.filter(Boolean).length}/${pending.totalBatches} landed`
+    );
+    await lock.commit(begin.token, { kind: "needs-attention" });
+    return res({
+      status: "needs-attention",
+      note:
+        `${landed.filter(Boolean).length} of ${pending.totalBatches} transactions landed; ` +
+        `reconcile manually before this pool pays again`,
+    });
+  }
+
+  // begin.action === "pay": we hold the lease.
+  const { token, coverageTo } = begin;
+
+  try {
+    const holders = await getPoolHolders(env, poolId, asset);
+    if (holders.length === 0) {
+      if (!dry) {
+        await lock.commit(token, { kind: "skipped", until: periodEnd(now, cadence) });
+        await skip(env, key, "no holders");
+      }
+      return res({ status: "no-holders" });
+    }
+
+    // Per-instance config from KV (set in the admin page), not global vars.
+    const budget = budgetForCadence(toStroops(inst.dailyAmount), cadence);
+    const { payouts, skippedNoTrustline, dust } = computePayouts(
+      holders,
+      budget,
+      toStroops(inst.minPayment),
+      mode
+    );
+
+    if (payouts.length === 0) {
+      if (!dry) {
+        await lock.commit(token, { kind: "skipped", until: periodEnd(now, cadence) });
+        await skip(env, key, "no eligible payouts");
+      }
       return res({
-        status: "needs-attention",
-        note:
-          `${landed.filter(Boolean).length} of ${pending.totalBatches} transactions ` +
-          `landed; reconcile manually before this pool pays again`,
+        holders: holders.length,
+        status: "nothing-to-pay",
+        note: skippedNoTrustline.length
+          ? `${skippedNoTrustline.length} lack trustline`
+          : "every share is below the minimum payment for this cadence",
       });
     }
-  }
 
-  // --- Guard 1, calendar: has THIS period already been handled? ---
-  // Falls back to older key shapes so a deploy that moves namespaces cannot
-  // re-pay a period an old key already owns.
-  let prior = await getRun(env, key);
-  let priorFromLegacy = false;
-  if (!prior) {
-    for (const lk of legacyPeriodKeys(poolId, asset.code, now, cadence)) {
-      prior = await getRun(env, lk);
-      if (prior) {
-        priorFromLegacy = true;
-        break;
+    const total = payouts.reduce((a, p) => a + p.stroops, 0n);
+
+    if (dry) {
+      console.log(
+        `[DRY RUN] pool ${short}: would pay ${fromStroops(total)} ` +
+          `${asset.code || "XLM"} to ${payouts.length} holders ` +
+          `(dust ${fromStroops(dust)}, ${skippedNoTrustline.length} no-trustline)`
+      );
+      for (const p of payouts) {
+        console.log(`    ${p.address} <- ${fromStroops(p.stroops)}`);
+      }
+      return res({
+        holders: holders.length,
+        paid: fromStroops(total),
+        recipients: payouts.length,
+        status: "dry-run",
+      });
+    }
+
+    if (!env.DISBURSER_SECRET) {
+      throw new Error("DISBURSER_SECRET not set (wrangler secret put DISBURSER_SECRET)");
+    }
+    const keypair = Keypair.fromSecret(env.DISBURSER_SECRET);
+
+    // With <=100 holders this is a single transaction; chunking is here so the
+    // bot keeps working if the pool ever grows.
+    const batches = chunk(payouts, MAX_OPS_PER_TX);
+    if (batches.length > 1) {
+      console.warn(
+        `pool ${short}: ${payouts.length} recipients needs ${batches.length} txs`
+      );
+    }
+
+    const record: PendingRun = {
+      periodKey: key,
+      cadence,
+      coverageFrom: begin.coverageFrom,
+      coverageTo,
+      batches: [],
+      totalBatches: batches.length,
+      at: now.toISOString(),
+    };
+
+    let paidTotal = 0n;
+    for (const [i, batch] of batches.entries()) {
+      const { tx, server } = await buildPaymentTx(env, keypair, batch, asset, inst.memo);
+      const hash = tx.hash().toString("hex");
+
+      // Recorded BEFORE submitting, so a crash mid-submit is recoverable. Each
+      // batch is appended rather than overwriting, so a partial multi-batch
+      // payout is detectable instead of looking like a single failed attempt.
+      record.batches.push({ index: i, txHash: hash });
+      await lock.commit(token, { kind: "pending", pending: { ...record } });
+      await server.submitTransaction(tx);
+
+      paidTotal += batch.reduce((a, p) => a + p.stroops, 0n);
+    }
+
+    const lastHash = record.batches.at(-1)!.txHash;
+    await lock.commit(token, { kind: "paid", coverageTo });
+    // KV is the AUDIT trail from here on, not the authority. If the two ever
+    // disagree, the lock is right.
+    await complete(env, key, lastHash, fromStroops(paidTotal));
+    console.log(
+      `pool ${short} (${cadence}): paid ${fromStroops(paidTotal)} to ${payouts.length} holders (${lastHash})`
+    );
+
+    return res({
+      holders: holders.length,
+      paid: fromStroops(paidTotal),
+      recipients: payouts.length,
+      txHash: lastHash,
+      status: "paid",
+    });
+  } catch (err) {
+    // Release the lease on a failure that happened BEFORE anything was built,
+    // so a transient Horizon error does not lock the pool out for five minutes.
+    // Once a pending record exists the lease is left alone: the payout may be
+    // in flight and only the resolve path may decide its fate.
+    if (!dry) {
+      const st = await lock.snapshot().catch(() => null);
+      if (!st?.pending) {
+        await lock.commit(token, { kind: "abandoned" }).catch(() => {});
       }
     }
+    throw err;
   }
-  if (prior) {
-    // Seed coverage if the calendar says handled but nothing recorded how long
-    // that payment funded. Every live instance was in exactly this state at the
-    // deploy that introduced coverage tracking, and without seeding, an
-    // operator who changed cadence in that window paid over a funded period.
-    if (!dry && (await getPaidThroughAt(env, ik)) === null) {
-      await setPaidThroughAt(env, ik, periodEnd(now, cadence));
-    }
-    return res({
-      status: "already-handled",
-      note: priorFromLegacy ? `${prior.status} (legacy key)` : prior.status,
-    });
+}
+
+/**
+ * Coverage implied by records written before the lock existed.
+ *
+ * Reads, in order of preference, the KV coverage record written by the previous
+ * version, then any calendar record for this period under the current or older
+ * key shapes. A calendar record means the period was handled, so it was funded
+ *至 the end of that period.
+ */
+async function legacyCoverage(
+  env: Env,
+  ik: string,
+  poolId: string,
+  assetCode: string,
+  now: Date,
+  cadence: Cadence
+): Promise<number | null> {
+  const stored = await getPaidThroughAt(env, ik);
+  if (stored !== null) return stored;
+
+  const keys = [
+    periodKey(ik, now, cadence),
+    ...legacyPeriodKeys(poolId, assetCode, now, cadence),
+  ];
+  for (const k of keys) {
+    if (await getRun(env, k)) return periodEnd(now, cadence);
   }
-
-  // --- Guard 2, coverage: is this stretch of time already funded? ---
-  // The guard that survives a cadence CHANGE. Each cadence writes calendar keys
-  // in its own namespace, so flipping cadence lands on a key nobody has written
-  // and guard 1 waves it through. Nothing is written here: the period is not
-  // "handled", it is simply not due, and a later tick should re-evaluate.
-  const paidThrough = await getPaidThroughAt(env, ik);
-  const decision = cadenceDue(paidThrough, now.getTime());
-  if (!decision.due) {
-    return res({
-      status: "cadence-wait",
-      note: `${humanDuration(decision.waitMs)} until the next ${cadenceLabel(cadence).toLowerCase()} payment`,
-    });
-  }
-
-  const holders = await getPoolHolders(env, poolId, asset);
-  if (holders.length === 0) {
-    // Never write the ledger during a dry run: marking the period "handled"
-    // would make the real run skip it.
-    if (!dry) await skip(env, key, "no holders");
-    return res({ status: "no-holders" });
-  }
-
-  // Per-instance config from KV (set in the admin page), not global vars.
-  const budget = budgetForCadence(toStroops(inst.dailyAmount), cadence);
-  const { payouts, skippedNoTrustline, dust } = computePayouts(
-    holders,
-    budget,
-    toStroops(inst.minPayment),
-    mode
-  );
-
-  if (payouts.length === 0) {
-    if (!dry) await skip(env, key, "no eligible payouts");
-    return res({
-      holders: holders.length,
-      status: "nothing-to-pay",
-      note: skippedNoTrustline.length
-        ? `${skippedNoTrustline.length} lack trustline`
-        : "every share is below the minimum payment for this cadence",
-    });
-  }
-
-  const total = payouts.reduce((a, p) => a + p.stroops, 0n);
-
-  if (dry) {
-    console.log(
-      `[DRY RUN] pool ${short}: would pay ${fromStroops(total)} ` +
-        `${asset.code || "XLM"} to ${payouts.length} holders ` +
-        `(dust ${fromStroops(dust)}, ${skippedNoTrustline.length} no-trustline)`
-    );
-    for (const p of payouts) {
-      console.log(`    ${p.address} <- ${fromStroops(p.stroops)}`);
-    }
-    return res({
-      holders: holders.length,
-      paid: fromStroops(total),
-      recipients: payouts.length,
-      status: "dry-run",
-    });
-  }
-
-  if (!env.DISBURSER_SECRET) {
-    throw new Error("DISBURSER_SECRET not set (wrangler secret put DISBURSER_SECRET)");
-  }
-  const keypair = Keypair.fromSecret(env.DISBURSER_SECRET);
-
-  // With <=100 holders this is a single transaction; chunking is here so the
-  // bot keeps working if the pool ever grows.
-  const batches = chunk(payouts, MAX_OPS_PER_TX);
-  if (batches.length > 1) {
-    console.warn(
-      `pool ${short}: ${payouts.length} recipients needs ${batches.length} txs`
-    );
-  }
-
-  // Coverage is fixed BEFORE submitting, so recovery inherits the window this
-  // payout was sized for rather than recomputing it from whenever it recovers.
-  const coverageFrom = Math.max(now.getTime(), paidThrough ?? now.getTime());
-  const coverageTo = paidThroughAfter(now.getTime(), paidThrough, cadence);
-
-  const record: PendingRun = {
-    periodKey: key,
-    cadence,
-    coverageFrom,
-    coverageTo,
-    batches: [],
-    totalBatches: batches.length,
-    at: now.toISOString(),
-  };
-
-  let paidTotal = 0n;
-  for (const [i, batch] of batches.entries()) {
-    const { tx, server } = await buildPaymentTx(env, keypair, batch, asset, inst.memo);
-    const hash = tx.hash().toString("hex");
-
-    // Record the hash BEFORE submitting, so a crash mid-submit is recoverable.
-    // Each batch is appended rather than overwriting, so a partial multi-batch
-    // payout is detectable instead of looking like a single failed attempt.
-    record.batches.push({ index: i, txHash: hash });
-    await setPending(env, ik, record);
-    await server.submitTransaction(tx);
-
-    paidTotal += batch.reduce((a, p) => a + p.stroops, 0n);
-  }
-
-  const lastHash = record.batches.at(-1)!.txHash;
-  await complete(env, key, lastHash, fromStroops(paidTotal));
-  await setPaidThroughAt(env, ik, coverageTo);
-  await clearPending(env, ik);
-  console.log(
-    `pool ${short} (${cadence}): paid ${fromStroops(paidTotal)} to ${payouts.length} holders (${lastHash})`
-  );
-
-  return res({
-    holders: holders.length,
-    paid: fromStroops(paidTotal),
-    recipients: payouts.length,
-    txHash: lastHash,
-    status: "paid",
-  });
+  return null;
 }
 
 async function runAll(env: Env) {
@@ -395,8 +446,19 @@ async function previewAll(env: Env) {
     try {
       // Reflect the guards, so the page does not promise a payment the next run
       // will decline. A pool that paid a minute ago is not about to pay again.
+      // Ask the lock, not KV: it is the authority on whether a run is due.
+      // `dry: true` means this takes no lease and changes nothing.
       const ik = instanceKey(inst.poolId, asset.code, asset.issuer);
-      const decision = cadenceDue(await getPaidThroughAt(env, ik), now.getTime());
+      const peek = await lockFor(env.PAYOUT_LOCK, ik).begin({
+        now: now.getTime(),
+        cadence,
+        seedCoverageTo: await legacyCoverage(env, ik, inst.poolId, asset.code, now, cadence),
+        dry: true,
+      });
+      const decision =
+        peek.action === "wait"
+          ? { due: false, waitMs: peek.waitMs }
+          : { due: true, waitMs: 0 };
 
       const holders = await getPoolHolders(env, inst.poolId, asset);
       // Per PAYMENT, not per day -- this is what one run actually sends.
@@ -422,11 +484,17 @@ async function previewAll(env: Env) {
         waitNote: decision.due
           ? null
           : `not due for ${humanDuration(decision.waitMs)}`,
-        status: !decision.due
-          ? "waiting for its next payment"
-          : payouts.length
-            ? "would pay"
-            : "nothing to pay",
+        needsAttention: peek.action === "needs-attention",
+        status:
+          peek.action === "needs-attention"
+            ? "NEEDS ATTENTION - a partial payout is unresolved"
+            : peek.action === "resolve"
+              ? "a previous payout is unresolved; the next run will check it"
+              : !decision.due
+                ? "waiting for its next payment"
+                : payouts.length
+                  ? "would pay"
+                  : "nothing to pay",
         recipients: payouts.length,
         paid: fs(payouts.reduce((a, p) => a + p.stroops, 0n)),
         noTrustline: skippedNoTrustline.length,

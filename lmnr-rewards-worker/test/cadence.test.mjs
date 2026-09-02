@@ -1,5 +1,6 @@
 import { cadenceDue, paidThroughAfter, budgetForCadence, intervalMs,
          paymentsPerDay, normalizeCadence, CADENCE_SLACK_MS } from "../.test-build/cadence.js";
+import { PayoutLock } from "../.test-build/lock.js";
 import { periodKey, legacyPeriodKeys, instanceKey, periodEnd,
          getPending, setPending, clearPending, getPaidThroughAt,
          setPaidThroughAt, complete, getRun } from "../.test-build/ledger.js";
@@ -358,6 +359,120 @@ async function tick(env, { ik, poolId, code, cadence, now, dry = false, landed =
     r.status === "needs-attention", r.status);
   t("...and the pending record is kept for reconciliation",
     (await getPending(env, K)) !== null);
+}
+
+
+// ---------------------------------------------------------------------------
+// Durable Object lock. Exercises the REAL PayoutLock class against a fake
+// storage backend — the class only ever touches state.storage.get/put/delete.
+// ---------------------------------------------------------------------------
+console.log("\n-- durable object: the race the lock exists for --");
+
+class FakeStorage {
+  constructor() { this.m = new Map(); }
+  async get(k) { return this.m.has(k) ? JSON.parse(this.m.get(k)) : undefined; }
+  async put(k, v) { this.m.set(k, JSON.stringify(v)); }
+  async delete(k) { this.m.delete(k); }
+}
+const newLock = () => new PayoutLock({ storage: new FakeStorage() }, {});
+const callLock = async (lock, path, body) => {
+  const r = await lock.fetch(new Request(`https://x${path}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }));
+  return r.json();
+};
+const T0 = ms("2026-09-02T06:00:00Z");
+
+{ // the actual race: cron tick and a manual run arriving together
+  const lock = newLock();
+  const a = await callLock(lock, "/begin", { now: T0, cadence: "hourly" });
+  const b = await callLock(lock, "/begin", { now: T0, cadence: "hourly" });
+  t("first caller is told to pay", a.action === "pay", a.action);
+  t("SECOND CALLER IS BLOCKED — this is the double-pay KV could not stop",
+    b.action === "busy", b.action);
+
+  const bad = await callLock(lock, "/commit", { token: "not-the-token", outcome: { kind: "paid", coverageTo: T0 + 3600_000 } });
+  t("a stale token cannot commit", bad.ok === false, JSON.stringify(bad));
+
+  const ok = await callLock(lock, "/commit", { token: a.token, outcome: { kind: "paid", coverageTo: a.coverageTo } });
+  t("the lease holder can commit", ok.ok === true);
+
+  const c = await callLock(lock, "/begin", { now: T0 + 60_000, cadence: "hourly" });
+  t("after payment the next caller waits out the period", c.action === "wait", c.action);
+  const d = await callLock(lock, "/begin", { now: T0 + 3600_000, cadence: "hourly" });
+  t("...and pays once the period is over", d.action === "pay", d.action);
+}
+
+{ // a worker that dies mid-payout must not lock the pool out forever
+  const lock = newLock();
+  const a = await callLock(lock, "/begin", { now: T0, cadence: "hourly" });
+  t("lease taken", a.action === "pay");
+  const soon = await callLock(lock, "/begin", { now: T0 + 60_000, cadence: "hourly" });
+  t("a second run 1 min later is still blocked", soon.action === "busy");
+  const later = await callLock(lock, "/begin", { now: T0 + 6 * 60_000, cadence: "hourly" });
+  t("the lease expires, so a dead worker cannot block the next tick",
+    later.action === "pay", later.action);
+}
+
+{ // dry runs take no lease and change nothing
+  const lock = newLock();
+  const before = JSON.stringify([...lock.state.storage.m.entries()].sort());
+  const d = await callLock(lock, "/begin", { now: T0, cadence: "hourly", dry: true });
+  const after = JSON.stringify([...lock.state.storage.m.entries()].sort());
+  t("dry begin still returns a decision", d.action === "pay", d.action);
+  t("dry begin writes nothing and takes no lease", before === after);
+  const real = await callLock(lock, "/begin", { now: T0, cadence: "hourly" });
+  t("...so a real run right after is not blocked by it", real.action === "pay", real.action);
+}
+
+{ // coverage may never move backwards, whatever a late caller claims
+  const lock = newLock();
+  const a = await callLock(lock, "/begin", { now: T0, cadence: "daily" });
+  await callLock(lock, "/commit", { token: a.token, outcome: { kind: "paid", coverageTo: a.coverageTo } });
+  const b = await callLock(lock, "/begin", { now: T0 + 86_400_000, cadence: "hourly" });
+  await callLock(lock, "/commit", { token: b.token, outcome: { kind: "paid", coverageTo: T0 } }); // stale, backwards
+  const st = await callLock(lock, "/state", {});
+  t("a stale coverage value cannot un-fund an already funded period",
+    st.coverageTo === a.coverageTo, `${st.coverageTo} vs ${a.coverageTo}`);
+}
+
+{ // migration seed applies once, only forward
+  const lock = newLock();
+  const a = await callLock(lock, "/begin", { now: T0, cadence: "hourly", seedCoverageTo: T0 + 3600_000 });
+  t("seeded coverage from pre-lock KV state blocks a re-pay", a.action === "wait", a.action);
+  const b = await callLock(lock, "/begin", { now: T0 + 3600_000, cadence: "hourly", seedCoverageTo: T0 });
+  t("a stale seed replayed later cannot un-fund anything", b.action === "pay", b.action);
+}
+
+{ // an unresolved payout outranks everything, and a partial one is sticky
+  const lock = newLock();
+  const a = await callLock(lock, "/begin", { now: T0, cadence: "hourly" });
+  const pending = { periodKey: "k", cadence: "hourly", coverageFrom: T0,
+    coverageTo: T0 + 3600_000, batches: [{ index: 0, txHash: "a" }, { index: 1, txHash: "b" }],
+    totalBatches: 2, at: "x" };
+  await callLock(lock, "/commit", { token: a.token, outcome: { kind: "pending", pending } });
+
+  const b = await callLock(lock, "/begin", { now: T0 + 6 * 60_000, cadence: "hourly" });
+  t("an in-flight payout is offered for resolution, not re-paid",
+    b.action === "resolve", b.action);
+  await callLock(lock, "/commit", { token: b.token, outcome: { kind: "needs-attention" } });
+
+  const c = await callLock(lock, "/begin", { now: T0 + 2 * 3600_000, cadence: "hourly" });
+  t("a partial payout latches: the pool will not pay again until a human clears it",
+    c.action === "needs-attention", c.action);
+}
+
+{ // "nothing to pay" is not re-scanned for the rest of the period
+  const lock = newLock();
+  const a = await callLock(lock, "/begin", { now: T0, cadence: "hourly" });
+  await callLock(lock, "/commit", { token: a.token, outcome: { kind: "skipped", until: T0 + 3600_000 } });
+  const b = await callLock(lock, "/begin", { now: T0 + 60_000, cadence: "hourly" });
+  t("a skipped period is not re-examined by repeated manual runs",
+    b.action === "attempted", b.action);
+  const c = await callLock(lock, "/begin", { now: T0 + 3600_000, cadence: "hourly" });
+  t("...but the next period is", c.action === "pay", c.action);
+  t("a skip does NOT count as coverage", (await callLock(lock, "/state", {})).coverageTo === null);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

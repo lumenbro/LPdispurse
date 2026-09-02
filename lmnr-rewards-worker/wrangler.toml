@@ -16,7 +16,30 @@ preview_urls = false
 [triggers]
 crons = ["0 * * * *"]
 
-# Idempotency ledger. Without this a crashed/retried run can DOUBLE-PAY.
+# Serialization authority for payouts. Workers KV is eventually consistent with
+# no compare-and-set, so it cannot stop an hourly cron tick and a manual /run
+# from both reading "not paid yet" and both paying. A Durable Object is
+# single-threaded per object, which turns that race into two ordered calls.
+#
+# Cost, on the Workers Paid plan (1M DO requests + 400,000 GB-s included/month):
+# the object holds ONLY the lock and the state -- Horizon paging and transaction
+# submission stay in the Worker -- so each call is milliseconds, not the ~30s a
+# payout takes. Three pools paying hourly is ~4,400 requests and well under
+# 100 GB-s a month. Do not move slow work inside the object; duration is billed
+# on wall time and doing so would raise it by orders of magnitude.
+[[durable_objects.bindings]]
+name = "PAYOUT_LOCK"
+class_name = "PayoutLock"
+
+# SQLite-backed: the current default, available on both plans, and billed per
+# row rather than per 4 KB unit. State here is a handful of small keys per
+# reward instance against a 5 GB-month allowance.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PayoutLock"]
+
+# Idempotency ledger, now the AUDIT TRAIL rather than the authority. If it ever
+# disagrees with the Durable Object, the Durable Object is right.
 #   wrangler kv namespace create LEDGER
 [[kv_namespaces]]
 binding = "LEDGER"

@@ -1,5 +1,7 @@
 export interface Env {
   LEDGER: KVNamespace;
+  /** Serialization authority for payouts. See lock.ts. */
+  PAYOUT_LOCK: DurableObjectNamespace;
   HORIZON_URL: string;
   NETWORK: string;
   REWARD_ASSET_CODE: string;
