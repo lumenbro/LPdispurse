@@ -56,22 +56,47 @@ Still set to **Proportional** — dev flips it himself.
 Caveat told to dev: sqrt REWARDS splitting a position across wallets. It is a
 distribution preference, not a Sybil defence.
 
-## NEXT BUILD — per-pool payout cadence (designed, not built)
-Dev wants per-pool **hourly / 12-hour / daily** selection.
+## SHIPPED — per-pool payout cadence (commit `bfadb55`, deployed)
+Per-pool **hourly / 12-hour / daily**, selected in the admin table ("Pays"
+column, with a live "Per payment" figure beside it).
 
-Design agreed:
-- **Cron stays hourly.** Each pool decides per tick whether its period elapsed.
-- Ledger key granularity by cadence: `pool:YYYY-MM-DDTHH` / `pool:YYYY-MM-DD:A|B`
-  / `pool:YYYY-MM-DD`
-- `dailyAmount` stays the DAILY budget; cadence only slices it (/24, /2, x1)
-- **⚠️ THE HAZARD**: switching cadence mid-period double-pays, because the two
-  schemes use different key namespaces. daily->hourly after today's payment
-  creates an unseen key and pays again; hourly->daily can pay a full day extra.
-  **FIX: also store `lastPaidAt` per pool and refuse to pay unless the current
-  cadence interval has elapsed.** Calendar key stays for audit; timestamp is the
-  guard.
-- Missed runs are skipped, not caught up (no burst on recovery).
-- Side effect: fewer/larger payments help small holders clear `minPayment`.
+- **Cron stays hourly** (`0 * * * *`, confirmed in deploy output). Cadence is
+  evaluated per pool on every tick; a pool whose period is funded declines.
+- `dailyAmount` is still the DAILY budget; cadence only slices it.
+- Missed ticks are skipped, never caught up.
+- **Two guards.** (1) the calendar key at the cadence's granularity, as before.
+  (2) `paidThroughAt` — the new one, and the load-bearing one.
+- **Why paid-through and not "time since last payment"**: the obvious guard only
+  closes one direction. A daily pool that paid a whole day at 00:00, switched to
+  hourly at 09:00, has trivially had an hour elapse — it would pay 15 more
+  slices on a day already funded. Asking "is now past the point the last payment
+  paid through?" closes both directions.
+- **The invariant is that coverage never overlaps** — every instant is paid for
+  exactly once. Verified over a 30-day sim including a plan that flips cadence
+  every single tick.
+- **Not a bug, tell the dev**: switching to Daily *prepays* 24 hours, so that
+  calendar day's spend looks larger and the next day pays nothing. The admin
+  page says this.
+- `paidThroughAfter` anchors to `max(now, previous)` so the 5-min jitter slack
+  cannot compound (measuring from `now` alone makes 55-minute "hours" → 26
+  payments/day, ~8% overspend).
+- **Also fixed a pre-existing collision**: the ledger keyed on the pool alone,
+  so two instances on one pool paying different assets (an advertised feature)
+  shared a ledger entry and the second never paid. Keys are now
+  `payout:<pool16>:<ASSET>:<stamp>`, with a read-only fallback to the old shape
+  so the namespace move could not re-pay a live period. **Verified on the live
+  KV**: at deploy time `payout:1810a5338d75c5bd:2026-09-02T05` was `done` and
+  the new-shape key did not exist — the fallback is what stopped a re-pay.
+  The fallback can be deleted after 2026-09-03 (one day past deploy).
+- `npm test` — 52 assertions in `test/cadence.test.mjs`. `npm run typecheck` clean.
+
+## DEV HAS CHANGED THE LIVE CONFIG (as of 2026-09-02 05:00 UTC)
+Different from what the earlier notes said — read KV, not the notes:
+- `XLM/xLMNR (TEST)` 240/day — now **disabled**
+- `SHX/xLMNR` **2500/day, ENABLED**, memo `xLMNR-SHx YIELD (TESTING)`
+- Paying live and hourly: 104.1666662 per hour, e.g. tx `b409da55…` at 05:00
+- Neither instance has a `cadence` field yet → both read as hourly, unchanged
+- Wallet: **38,737.5 xLMNR, 5.44 XLM**. At 2500/day that is ~15 days of runway.
 
 ## OTHER OPEN ITEMS
 - **lumexo stale logo**: NOT our bug. app.lumexo.io caches
