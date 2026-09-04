@@ -20,9 +20,12 @@
 > The code below is a correct SEP-2 implementation and is worth reusing; only
 > the hosting location was wrong.
 >
-> **Loose end**: the `federation.lumenbro.com` DNS record still exists and now
-> serves a Cloudflare 530. Delete it in the dashboard: DNS → lumenbro.com →
-> remove the `federation` record.
+> **DNS is already clean.** `federation.lumenbro.com` was a Workers *Custom
+> Domain*, which Cloudflare manages as an auto-created record — deleting the
+> Worker removed it too. Cloudflare's authoritative nameservers return NXDOMAIN
+> for the name and the apex is unaffected. Nothing to remove in the dashboard.
+> (Checking immediately after a delete can show a cached answer and a 530 from
+> an edge that has not caught up; query an authoritative NS to see the truth.)
 
 # lmnr-federation
 

@@ -45,9 +45,11 @@ domain was never going to pass.
   implementation is correct and reusable; only the hosting location was wrong.
   **To bring it back, serve it FROM thelumenaire.com** (a `/federation` route on
   the site), not from a separate Worker on another domain.
-- **LOOSE END**: the `federation.lumenbro.com` DNS record still exists and now
-  serves a Cloudflare 530. Deleting a Worker does not remove the record. Fix in
-  the dashboard: DNS -> lumenbro.com -> remove the `federation` record.
+- **DNS is clean, nothing to do.** `federation.lumenbro.com` was a Workers
+  *Custom Domain* — an auto-managed record — so deleting the Worker removed it.
+  Verified NXDOMAIN from Cloudflare's own authoritative nameserver, apex
+  unaffected. An earlier note claimed a dangling record; that was a stale cache
+  read seconds after the delete, and it was wrong.
 
 ## STOPPED / PARKED
 - **Staking contract v2**: complete, 7 Codex review rounds ending clean, 74 tests,
