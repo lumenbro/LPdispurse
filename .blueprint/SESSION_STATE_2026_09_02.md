@@ -23,13 +23,31 @@ ACT-style push rewards. Hourly cron, pays LPs pro-rata in one transaction per po
   CLI copy was REMOVED. `~/.config/stellar/identity` now chmod 700/600.
   Removing his access = full key rotation, not a revoke.
 
-### Federation — both resolve to the same wallet
-- `rewards*thelumenaire.com` -> `lmnr-federation` Worker at `federation.lumenbro.com`
-  (separate Worker, no secrets, deliberately NOT behind Access — must be public)
-- `xLMNR-REWARDS*lobstr.co` -> dev set this in Lobstr
-- `FEDERATION_SERVER` line added to the site toml (LUMENAIRE repo, commit 7af62f7)
-- Lobstr only reverse-resolves its OWN names, which is why the lobstr one shows on
-  received payments and ours does not. Not a bug.
+### Federation — REMOVED 2026-09-04
+Only `xLMNR-REWARDS*lobstr.co` remains, set by the dev in Lobstr and hosted on
+Lobstr's own domain. Ours is gone.
+
+Stellar Expert was warning on the site toml:
+> SEP service FEDERATION_SERVER ignored. URL hostname should match the home_domain.
+
+SEP-1 expects the federation endpoint on the **same host that serves the toml**.
+Ours ran on `federation.lumenbro.com` while the toml is served from
+`thelumenaire.com` — a different registrable domain — so validators ignored the
+line and warned instead of using it. Putting it on a subdomain of the *other*
+domain was never going to pass.
+
+- `FEDERATION_SERVER` removed from the toml (LUMENAIRE `62246b4`, live and
+  verified on www.thelumenaire.com)
+- `lmnr-federation` Worker **deleted** from Cloudflare
+- Nobody was using `rewards*thelumenaire.com`, confirmed with the dev before
+  removal
+- Source kept at `lmnr-federation/` with a DECOMMISSIONED banner. The SEP-2
+  implementation is correct and reusable; only the hosting location was wrong.
+  **To bring it back, serve it FROM thelumenaire.com** (a `/federation` route on
+  the site), not from a separate Worker on another domain.
+- **LOOSE END**: the `federation.lumenbro.com` DNS record still exists and now
+  serves a Cloudflare 530. Deleting a Worker does not remove the record. Fix in
+  the dashboard: DNS -> lumenbro.com -> remove the `federation` record.
 
 ## STOPPED / PARKED
 - **Staking contract v2**: complete, 7 Codex review rounds ending clean, 74 tests,

@@ -1,3 +1,29 @@
+> ## DECOMMISSIONED 2026-09-04 — do not redeploy as-is
+>
+> The Cloudflare Worker was deleted and `FEDERATION_SERVER` was removed from the
+> site toml. Stellar Expert was warning:
+>
+> > SEP service FEDERATION_SERVER ignored. URL hostname should match the
+> > home_domain.
+>
+> SEP-1 expects the federation endpoint on the **same host that serves the
+> toml**. This ran on `federation.lumenbro.com` while the toml is served from
+> `thelumenaire.com` — a different registrable domain — so validators ignored
+> the line and warned instead of using it. A subdomain of the *other* domain was
+> never going to satisfy the check.
+>
+> Nothing depended on it. The rewards wallet is reachable as
+> `xLMNR-REWARDS*lobstr.co`, which Lobstr hosts on its own domain.
+>
+> **If you bring it back**, serve it FROM `thelumenaire.com` — a `/federation`
+> route on the LUMENAIRE site — not from a separate Worker on another domain.
+> The code below is a correct SEP-2 implementation and is worth reusing; only
+> the hosting location was wrong.
+>
+> **Loose end**: the `federation.lumenbro.com` DNS record still exists and now
+> serves a Cloudflare 530. Delete it in the dashboard: DNS → lumenbro.com →
+> remove the `federation` record.
+
 # lmnr-federation
 
 SEP-2 federation server for `thelumenaire.com`, so the rewards wallet appears as
